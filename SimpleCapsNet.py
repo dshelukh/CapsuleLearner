@@ -6,6 +6,15 @@ import tensorflow as tf
 from CapsTools import *
 from CapsuleLayer import *
 
+class LossConfig():
+    def __init__(self):
+        self.with_reconstruction = True
+        self.margin_m_plus = 0.9
+        self.margin_m_minus = 0.1
+        self.margin_lambda = 0.5
+
+        self.reconstruction_coef = 0.0001
+
 class ConfigCapsNet():
     def __init__(self):
         self.conv1_size = 256
@@ -23,15 +32,9 @@ class ConfigCapsNet():
         self.reconstruction_1 = 512
         self.reconstruction_2 = 1024
         self.reconstruction_3 = 784 # should be w * h
+        self.loss_config = LossConfig()
 
-class LossConfig():
-    def __init__(self):
-        self.with_reconstruction = True
-        self.margin_m_plus = 0.9
-        self.margin_m_minus = 0.1
-        self.margin_lambda = 0.5
 
-        self.reconstruction_coef = 0.0005
 
 class SimpleCapsNet():
     def __init__(self, config = ConfigCapsNet()):
@@ -52,11 +55,12 @@ class SimpleCapsNet():
         self.flattened = tf.contrib.layers.flatten(self.masked_output)
         self.rec1 = tf.layers.dense(self.flattened, config.reconstruction_1, activation = tf.nn.relu, name = 'rec1')
         self.rec2 = tf.layers.dense(self.rec1, config.reconstruction_2, activation = tf.nn.relu, name = 'rec2')
-        self.rec3 = tf.layers.dense(self.rec2, config.reconstruction_3, name = 'rec3')
+        rec3_size = np.prod(input_.shape.as_list()[1:])
+        self.rec3 = tf.layers.dense(self.rec2, rec3_size, name = 'rec3')
         self.reconstructed = tf.reshape(tf.sigmoid(self.rec3), tf.shape(input_))
 
-    def lossFunction(self, targets, loss_config = LossConfig()):
-        
+    def lossFunction(self, targets):
+        loss_config = self.config.loss_config
         margin_loss = targets * tf.square(tf.maximum(0.0, loss_config.margin_m_plus - self.output_norms))
         margin_loss += (1 - targets) * tf.square(tf.maximum(0.0, self.output_norms - loss_config.margin_m_minus))
         margin_loss = tf.reduce_sum(margin_loss, axis = 1)
@@ -64,7 +68,7 @@ class SimpleCapsNet():
         reconstruction_loss = 0.0
         if (loss_config.with_reconstruction):
             input_flattened = tf.reshape(self.input, tf.shape(self.rec3))
-            reconstruction_loss = loss_config.reconstruction_coef * tf.nn.sigmoid_cross_entropy_with_logits(logits=self.rec3, labels = input_flattened)
+            reconstruction_loss = loss_config.reconstruction_coef * tf.square(input_flattened - self.rec3) #tf.nn.sigmoid_cross_entropy_with_logits(logits=self.rec3, labels = input_flattened)
             reconstruction_loss = tf.reduce_sum(reconstruction_loss, axis = -1)
         return tf.reduce_sum(margin_loss + reconstruction_loss)
 

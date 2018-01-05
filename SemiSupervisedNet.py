@@ -7,6 +7,7 @@ import tensorflow as tf
 from Trainer import *
 import code
 
+# TODO: add function to retrieve data as dictionary or array for conv2d
 class ConvData():
     def __init__(self, num_features, kernel, stride):
         self.num_features, self.kernel, self.stride = num_features, kernel, stride
@@ -147,3 +148,35 @@ class SemiSupervisedNetwork():
 
 
 
+
+
+#
+# With Capsules
+#
+class SemiSupCapsConfig():
+    def __init__(self):
+        self.conv1_info = ConvData(128, 3, 2)
+        self.conv2_info = ConvData(128, 3, 2)
+        self.caps1_len = 8
+        self.caps2_len = 16
+        self.num_outputs = 10
+        self.code_size = 160
+
+class SemiSupCapsNet():
+    def __init__(self, config = SemiSupCapsConfig()):
+        self.config = config
+
+    def run_encoder(self, inputs, reuse = False, training = False):
+        config = self.config
+
+        with(tf.variable_scope('discriminator', reuse=reuse)):
+            conv1_info = config.conv1_info
+            conv1 = tf.layers.conv2d(inputs, conv1_info.num_features, conv1_info.kernel, conv1_info.stride, padding = 'same')
+            conv2_info = config.conv2_info
+            conv2 = tf.layers.conv2d(inputs, conv2_info.num_features, conv2_info.kernel, conv2_info.stride, padding = 'same')
+
+            caps1 = squash(reshapeToCapsules(tf.transpose(self.conv2, [0, 3, 1, 2]), config.caps1_len, axis = 1))
+            caps_layer = CapsLayer(caps1, config.num_outputs, config.caps2_len)
+            caps2 = self.caps_layer.do_dynamic_routing()
+    def run(self, input, code, training = True):
+        pass
