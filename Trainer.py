@@ -54,7 +54,7 @@ class TrainerParams():
     def __init__(self, learning_rate = 0.001):
         self.optimizer = tf.train.AdamOptimizer(learning_rate)
         self.max_epochs = 50
-        self.batch_size = 300
+        self.batch_size = 500
 
         # early stopping params
         self.threshold = 10
@@ -161,12 +161,15 @@ class Trainer():
                 for i in range(start_step, num_batches):
                     batch_images, batch_labels = dataset.get_batch(train_dataset, i, batch_size)
                     inputs = sess.run(augmentation(*self.input_data), feed_dict={self.input_data: batch_images})
-                    writer = tf.summary.FileWriter("./tmp/log/smth.log", sess.graph)
+                    #writer = tf.summary.FileWriter("./tmp/log/smth.log", sess.graph)
+                    losses = []
+                    #for minimizer, loss in zip(minimizers, self.loss):
                     _, train_loss = sess.run((tuple(minimizers), tuple(self.loss)), feed_dict={self.input_data: inputs,
-                                                                                               self.targets: batch_labels,
-                                                                                               self.training: True})
+                                                                                           self.targets: batch_labels,
+                                                                                           self.training: True})
+                    #    losses.append(train_loss)
                     train_loss = np.array(train_loss)
-                    writer.close()
+                    #writer.close()
                     self.step_num += 1
                     print('Epoch', self.cur_epoch,', step', self.step_num, '. Training loss: ' + str(train_loss / batch_size))
 
@@ -198,11 +201,15 @@ def augment_data(data, max_translate = (2, 2)):
     return tf.contrib.image.transform(data, transform_mat)
 
 if __name__ == "__main__":
+    #from SvhnDataset import *
+    #dataset = SvhnDataset(0.4, feature_range = (0, 1)).get_dataset_for_trainer(False)
+    
     mnist = input_data.read_data_sets('MNIST_data', reshape=False, one_hot=True, validation_size = 5000)
     dataset = Dataset(mnist)
     print(len(dataset.test.images),len(dataset.val.images),len(dataset.train.images))
     params = TrainerParams()
     params.val_check_period = 20
+
     network_base = SimpleCapsNet()
     network = Network(network_base, 'lossFunction', 'run', 'num_classified')
     trainer = Trainer(network, dataset, params)

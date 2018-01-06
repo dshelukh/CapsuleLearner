@@ -11,17 +11,19 @@ import tensorflow as tf
 
 mode = 'semi'
 save_folder = 'semi-supervised'
-batch_size = 1000
+batch_size = 150
 
 need_resave = False
-dataset = SvhnDataset(0.0, 1000).get_dataset_for_trainer()#AE_Dataset((train, val, test))
-network_base = SemiSupervisedNetwork()
+dataset = SvhnDataset(0.15, 1000).get_dataset_for_trainer()#AE_Dataset((train, val, test))
+network_base = SemiSupCapsNet() #SemiSupervisedNetwork()
+dataset.code_size = network_base.config.code_size
 params = TrainerParams()
 params.batch_size = batch_size
+params.val_check_period = 50
 
 if (mode == 'ae' or mode == 'both'):
     tf.reset_default_graph()
-    network = Network(network_base, 'ae_loss', 'run_autoencoder', 'num_classified_ae', minimizer = 'get_minimizers_ae')
+    network = Network(network_base, *network_base.get_ae_functions_for_trainer())
     trainer = Trainer(network, dataset, params)
     saver = CustomSaver(folders=[save_folder + '/ae', save_folder + '/ae/epoch'])
     trainer.train(saver)
@@ -30,7 +32,7 @@ if (mode == 'ae' or mode == 'both'):
 if (mode == 'semi' or mode == 'both'):
     tf.reset_default_graph()
     dataset.with_randoms = True
-    network2 = Network(network_base, 'semi_loss', 'run_semi_supervised', 'num_classified_semi', 'get_minimizers_semi')
+    network2 = Network(network_base, *network_base.get_functions_for_trainer()) #get_semi_functions_for_trainer())
     trainer2 = Trainer(network2, dataset, params)
     saver2 = CustomSaver(folders=[save_folder + '/semi', save_folder + '/semi/epoch'])
     if (need_resave):
@@ -39,7 +41,7 @@ if (mode == 'semi' or mode == 'both'):
             saver2.restore_session(sess, filename = saver2.get_last_saved(save_folder + '/ae'))
             saver2.save_session(sess, False, (0, 0), (0, [float('inf'), float('inf')], 0))
             print('Resaved!')
-    trainer2.train(saver2)
+    trainer2.train(saver2, restore_from_epochend = True)
 
 '''
 tf.reset_default_graph()

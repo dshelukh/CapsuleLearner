@@ -7,10 +7,13 @@ import tensorflow as tf
 from Trainer import *
 import code
 
-# TODO: add function to retrieve data as dictionary or array for conv2d
 class ConvData():
-    def __init__(self, num_features, kernel, stride):
+    def __init__(self, num_features, kernel, stride, padding = 'same'):
         self.num_features, self.kernel, self.stride = num_features, kernel, stride
+        self.padding = padding
+
+    def get_conv_data(self):
+        return self.num_features, self.kernel, self.stride, self.padding
 
 def leaky_relu(x, alpha = 0.01):
     return tf.maximum(x, alpha * x)
@@ -146,6 +149,11 @@ class SemiSupervisedNetwork():
             #minimizer = optimizer.optimize(loss[0], loss[1], d_vars, g_vars)
         return [minimizer_d, minimizer_g]
 
+    def get_ae_functions_for_trainer(self):
+        return 'ae_loss', 'run_autoencoder', 'num_classified_ae', 'get_minimizers_ae'
+
+    def get_semi_functions_for_trainer(self):
+        return 'semi_loss', 'run_semi_supervised', 'num_classified_semi', 'get_minimizers_semi'
 
 
 
@@ -154,13 +162,22 @@ class SemiSupervisedNetwork():
 # With Capsules
 #
 class SemiSupCapsConfig():
-    def __init__(self):
+    def __init__(self, num_outputs = 10, caps1_len = 8, caps2_len = 16, capsg_len = 8, capsg_size = [8, 8, 32]):
+        # discriminator
         self.conv1_info = ConvData(128, 3, 2)
         self.conv2_info = ConvData(128, 3, 2)
-        self.caps1_len = 8
-        self.caps2_len = 16
-        self.num_outputs = 10
-        self.code_size = 160
+        self.caps1_len = caps1_len
+
+        self.caps2_len = caps2_len
+        self.num_outputs = num_outputs
+        self.code_size = caps2_len * num_outputs
+        self.leaky_alpha = 0.01
+
+        # generator
+        self.capsg_len = capsg_len
+        self.capsg_size = capsg_size
+        self.deconv1_info = ConvData(128, 3, 2)
+        self.deconv2_info = ConvData(3, 3, 2)
 
 class SemiSupCapsNet():
     def __init__(self, config = SemiSupCapsConfig()):
@@ -172,11 +189,98 @@ class SemiSupCapsNet():
         with(tf.variable_scope('discriminator', reuse=reuse)):
             conv1_info = config.conv1_info
             conv1 = tf.layers.conv2d(inputs, conv1_info.num_features, conv1_info.kernel, conv1_info.stride, padding = 'same')
-            conv2_info = config.conv2_info
-            conv2 = tf.layers.conv2d(inputs, conv2_info.num_features, conv2_info.kernel, conv2_info.stride, padding = 'same')
+            conv1 = tf.layers.batch_normalization(conv1, training = training)
+            conv1 = leaky_relu(conv1, config.leaky_alpha)
 
-            caps1 = squash(reshapeToCapsules(tf.transpose(self.conv2, [0, 3, 1, 2]), config.caps1_len, axis = 1))
+            conv2_info = config.conv2_info
+            conv2 = tf.layers.conv2d(conv1, conv2_info.num_features, conv2_info.kernel, conv2_info.stride, padding = 'same')
+            conv2 = tf.layers.batch_normalization(conv2, training = training) # or without it?
+
+            caps1 = squash(reshapeToCapsules(tf.transpose(conv2, [0, 3, 1, 2]), config.caps1_len, axis = 1))
             caps_layer = CapsLayer(caps1, config.num_outputs, config.caps2_len)
-            caps2 = self.caps_layer.do_dynamic_routing()
-    def run(self, input, code, training = True):
-        pass
+            caps2 = caps_layer.do_dynamic_routing()
+            return caps2
+
+    def get_masked_code(self, code):
+        masked = tf.multiply(code, maskForMaxCapsule(norm(code)))
+        return masked # tf.contrib.layers.flatten(masked)
+
+    def generate_from_code(self, masked_code, reuse = False, training = True):
+        config = self.config
+
+        with(tf.variable_scope('generator', reuse=reuse)):
+            caps = squash(masked_code)
+            caps_layer = CapsLayer(caps, np.prod(config.capsg_size), config.capsg_len)
+            caps2 = caps_layer.do_dynamic_routing()
+            reshaped = tf.reshape(caps2, [-1, config.capsg_size[0], config.capsg_size[1], config.capsg_size[2] * config.capsg_len])
+
+            deconv1_info = config.deconv1_info
+            gconv1 = tf.layers.conv2d_transpose(reshaped, *(deconv1_info.get_conv_data()))
+            gconv1 = tf.layers.batch_normalization(gconv1, training = training)
+            gconv1 = leaky_relu(gconv1, config.leaky_alpha)
+
+            deconv2_info = config.deconv2_info
+            gconv2 = tf.layers.conv2d_transpose(gconv1, *(deconv2_info.get_conv_data()))
+            return gconv2
+
+    def is_fake(self, code, reuse = False):
+        with (tf.variable_scope('discriminator_add', reuse = reuse)):
+            flattened = tf.contrib.layers.flatten(code)
+            fake_detector = tf.layers.dense(flattened, 1)
+        return fake_detector
+
+    def run(self, inputs, code, training = True):
+        config = self.config
+
+        code = code[:, config.num_outputs:]
+        caps_code = tf.reshape(code, [-1, config.num_outputs, config.caps2_len])
+        self.code_labels = tf.one_hot(tf.argmax(norm(caps_code), axis = -1), config.num_outputs)
+        self.generated = self.generate_from_code(caps_code, False, training)
+
+        images = tf.concat((inputs, tf.tanh(self.generated)), axis = 0)
+        sizes = [tf.shape(inputs)[0], tf.shape(self.generated)[0]]
+        self.codes = self.run_encoder(images, False, training)
+
+        self.inputs_code, self.gen_code = tf.split(self.codes, sizes)
+        self.reconstructed = self.generate_from_code(self.inputs_code, True, training)
+        self.orig, self.fake = tf.split(self.is_fake(self.codes), sizes)
+
+    def loss_function(self, targets, images):
+        targets_mask = tf.reduce_sum(targets, axis = -1)
+
+        loss_on_targets = targets_mask * tf.nn.softmax_cross_entropy_with_logits(labels = targets, logits = norm(self.inputs_code))
+        loss_on_gen = tf.nn.softmax_cross_entropy_with_logits(labels = self.code_labels, logits = norm(self.gen_code))
+        reconstruction_loss = tanh_cross_entropy(logits = self.reconstructed, labels = images)
+        orig_detection_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = tf.ones_like(self.orig), logits = self.orig)
+        fake_detection_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = tf.zeros_like(self.fake), logits = self.fake)
+        fake_error_detection_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = tf.ones_like(self.fake), logits = self.fake)
+        
+        d_loss = tf.reduce_sum(loss_on_targets) + 0.01 * tf.reduce_sum(loss_on_gen) + 0.0001 * tf.reduce_sum(reconstruction_loss)
+        d_loss += tf.reduce_sum(orig_detection_loss) + tf.reduce_sum(fake_detection_loss)
+
+        g_loss = 0.01 * tf.reduce_sum(loss_on_gen) + 0.0001 * tf.reduce_sum(reconstruction_loss)
+        g_loss += tf.reduce_sum(fake_error_detection_loss)
+        return d_loss, g_loss
+
+    def get_num_classified(self, targets, labels):
+        labels_mask = tf.reduce_sum(targets, axis = -1)
+        classified = tf.equal(tf.argmax(labels, axis = -1), tf.argmax(targets, axis = -1))
+        return tf.reduce_sum(tf.cast(classified, tf.float32) * labels_mask)
+
+    def num_classified(self, targets, images):
+        return self.get_num_classified(targets, norm(self.inputs_code))
+
+    def get_minimizers(self, optimizer, loss):
+        all_vars = tf.trainable_variables()
+        d_vars = [v for v in all_vars if v.name.startswith('discriminator')]
+        g_vars = [v for v in all_vars if v.name.startswith('generator')]
+
+        with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
+            minimizer_d = optimizer.minimize(loss[0], var_list = d_vars)
+            minimizer_g = optimizer.minimize(loss[1], var_list = g_vars)
+            #minimizer = optimizer.optimize(loss[0], loss[1], d_vars, g_vars)
+        return [minimizer_d, minimizer_g]
+
+    def get_functions_for_trainer(self):
+        return 'loss_function', 'run', 'num_classified', 'get_minimizers'
+
