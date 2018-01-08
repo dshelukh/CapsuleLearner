@@ -29,13 +29,13 @@ batch_size = args['b']
 leave_num = args['l']
 
 need_resave = False
-dataset = SvhnDataset(0.15, leave_num).get_dataset_for_trainer()#AE_Dataset((train, val, test))
+dataset = SvhnDataset(0.15, leave_num).get_dataset_for_trainer()
 network_base = SemiSupCapsNet() #SemiSupervisedNetwork()
 dataset.code_size = network_base.config.code_size
 params = TrainerParams()
 params.batch_size = batch_size
 params.val_check_period = 50
-params.optimizer = tf.train.RMSPropOptimizer(0.001)
+params.optimizer = tf.contrib.opt.NadamOptimizer() #tf.train.RMSPropOptimizer(0.001)
 params.early_stopping = False
 
 if (mode == 'ae' or mode == 'both'):

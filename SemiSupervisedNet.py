@@ -161,8 +161,12 @@ class SemiSupervisedNetwork():
 #
 # With Capsules
 #
+class SemiSupLossConfig():
+    def __init__(self, label_smoothing = 0.9):
+        self.label_smoothing = label_smoothing
+
 class SemiSupCapsConfig():
-    def __init__(self, num_outputs = 10, caps1_len = 8, caps2_len = 16, capsg_len = 8, capsg_size = [8, 8, 32]):
+    def __init__(self, num_outputs = 10, caps1_len = 8, caps2_len = 16, capsg_len = 8, capsg_size = [8, 8, 32], loss_config = SemiSupLossConfig()):
         # discriminator
         self.conv1_info = ConvData(128, 3, 2)
         self.conv2_info = ConvData(128, 3, 2)
@@ -178,6 +182,8 @@ class SemiSupCapsConfig():
         self.capsg_size = capsg_size
         self.deconv1_info = ConvData(128, 3, 2)
         self.deconv2_info = ConvData(3, 3, 2)
+
+        self.loss_config = loss_config
 
 class SemiSupCapsNet():
     def __init__(self, config = SemiSupCapsConfig()):
@@ -225,8 +231,7 @@ class SemiSupCapsNet():
 
     def is_fake(self, code, reuse = False):
         with (tf.variable_scope('discriminator_add', reuse = reuse)):
-            flattened = tf.contrib.layers.flatten(code)
-            fake_detector = tf.layers.dense(flattened, 1)
+            fake_detector = tf.layers.dense(code, 1)
         return fake_detector
 
     def run(self, inputs, code, training = True):
@@ -240,26 +245,34 @@ class SemiSupCapsNet():
         images = tf.concat((inputs, tf.tanh(self.generated)), axis = 0)
         sizes = [tf.shape(inputs)[0], tf.shape(self.generated)[0]]
         self.codes = self.run_encoder(images, False, training)
+        features = tf.contrib.layers.flatten(self.codes)
+        self.real_features, self.fake_features = tf.split(features, sizes)
 
         self.inputs_code, self.gen_code = tf.split(self.codes, sizes)
         self.reconstructed = self.generate_from_code(self.inputs_code, True, training)
-        self.orig, self.fake = tf.split(self.is_fake(self.codes), sizes)
+        self.orig, self.fake = tf.split(self.is_fake(features), sizes)
+
+    def get_feature_matching_loss(self):
+        return tf.reduce_sum(tf.abs(tf.reduce_mean(self.real_features, 0) - tf.reduce_mean(self.fake_features, 0)))
 
     def loss_function(self, targets, images):
+        lconfig = self.config.loss_config
         targets_mask = tf.reduce_sum(targets, axis = -1)
 
-        loss_on_targets = targets_mask * tf.nn.softmax_cross_entropy_with_logits(labels = targets, logits = norm(self.inputs_code))
+        loss_on_targets = lconfig.label_smoothing * targets_mask * tf.nn.softmax_cross_entropy_with_logits(labels = targets, logits = norm(self.inputs_code))
         loss_on_gen = tf.nn.softmax_cross_entropy_with_logits(labels = self.code_labels, logits = norm(self.gen_code))
         reconstruction_loss = tanh_cross_entropy(logits = self.reconstructed, labels = images)
         orig_detection_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = tf.ones_like(self.orig), logits = self.orig)
         fake_detection_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = tf.zeros_like(self.fake), logits = self.fake)
         fake_error_detection_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = tf.ones_like(self.fake), logits = self.fake)
-        
-        d_loss = tf.reduce_sum(loss_on_targets) + 0.0001 * tf.reduce_sum(reconstruction_loss) #+ 0.01 * tf.reduce_sum(loss_on_gen)
+        feature_matching_loss = self.get_feature_matching_loss()
+
+        d_loss = tf.reduce_sum(loss_on_targets)# + 0.0001 * tf.reduce_sum(reconstruction_loss) #+ 0.01 * tf.reduce_sum(loss_on_gen)
         d_loss += tf.reduce_sum(orig_detection_loss) + tf.reduce_sum(fake_detection_loss)
 
-        g_loss = 0.0001 * tf.reduce_sum(reconstruction_loss) # + 0.01 * tf.reduce_sum(loss_on_gen)
-        g_loss += tf.reduce_sum(fake_error_detection_loss)
+        #g_loss = 0.0001 * tf.reduce_sum(reconstruction_loss) # + 0.01 * tf.reduce_sum(loss_on_gen)
+        #g_loss += tf.reduce_sum(fake_error_detection_loss)
+        g_loss = feature_matching_loss
         return d_loss, g_loss
 
     def get_num_classified(self, targets, labels):
