@@ -194,7 +194,7 @@ class SemiSupCapsNet():
 
             conv2_info = config.conv2_info
             conv2 = tf.layers.conv2d(conv1, conv2_info.num_features, conv2_info.kernel, conv2_info.stride, padding = 'same')
-            conv2 = tf.layers.batch_normalization(conv2, training = training) # or without it?
+            #conv2 = tf.layers.batch_normalization(conv2, training = training) # do we need it?
 
             caps1 = squash(reshapeToCapsules(tf.transpose(conv2, [0, 3, 1, 2]), config.caps1_len, axis = 1))
             caps_layer = CapsLayer(caps1, config.num_outputs, config.caps2_len)
@@ -255,10 +255,10 @@ class SemiSupCapsNet():
         fake_detection_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = tf.zeros_like(self.fake), logits = self.fake)
         fake_error_detection_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = tf.ones_like(self.fake), logits = self.fake)
         
-        d_loss = tf.reduce_sum(loss_on_targets) + 0.01 * tf.reduce_sum(loss_on_gen) + 0.0001 * tf.reduce_sum(reconstruction_loss)
+        d_loss = tf.reduce_sum(loss_on_targets) + 0.0001 * tf.reduce_sum(reconstruction_loss) #+ 0.01 * tf.reduce_sum(loss_on_gen)
         d_loss += tf.reduce_sum(orig_detection_loss) + tf.reduce_sum(fake_detection_loss)
 
-        g_loss = 0.01 * tf.reduce_sum(loss_on_gen) + 0.0001 * tf.reduce_sum(reconstruction_loss)
+        g_loss = 0.0001 * tf.reduce_sum(reconstruction_loss) # + 0.01 * tf.reduce_sum(loss_on_gen)
         g_loss += tf.reduce_sum(fake_error_detection_loss)
         return d_loss, g_loss
 

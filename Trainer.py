@@ -60,6 +60,7 @@ class TrainerParams():
         self.threshold = 10
         self.epsilon = 0.0001
         self.val_check_period = 30
+        self.early_stopping = True
 
 class Network():
     def __init__(self, network, loss, run = 'run', acc = None, minimizer = None):
@@ -187,7 +188,7 @@ class Trainer():
                 test_loss, test_acc = self.run_on_dataset(sess, dataset.get_dataset('test'), batch_size)
                 print('Test accuracy after', self.cur_epoch, 'epoch: ', test_acc * 100, 'Test loss: ', test_loss)
                 saver.save_session(sess, True, (self.cur_epoch), save_data = (self.cur_epoch, self.cur_loss, self.step_num))
-                if (waiting_for > self.params.threshold):
+                if (waiting_for > self.params.threshold and self.params.early_stopping):
                     print('Loss didn\'t improve for %d checks' % self.params.threshold)
                     break
         print('Training is completed!')
