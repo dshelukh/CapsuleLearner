@@ -35,7 +35,7 @@ dataset.code_size = network_base.config.code_size
 params = TrainerParams()
 params.batch_size = batch_size
 params.val_check_period = 50
-params.optimizer = tf.contrib.opt.NadamOptimizer() #tf.train.RMSPropOptimizer(0.001)
+params.optimizer = tf.train.AdamOptimizer(0.001)
 params.early_stopping = False
 
 if (mode == 'ae' or mode == 'both'):

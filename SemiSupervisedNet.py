@@ -177,6 +177,9 @@ class SemiSupCapsConfig():
         self.code_size = caps2_len * num_outputs
         self.leaky_alpha = 0.01
 
+        self.minibatch_num = 32
+        self.minibatch_len = 16
+
         # generator
         self.capsg_len = capsg_len
         self.capsg_size = capsg_size
@@ -229,6 +232,22 @@ class SemiSupCapsNet():
             gconv2 = tf.layers.conv2d_transpose(gconv1, *(deconv2_info.get_conv_data()))
             return gconv2
 
+    def add_minibatch_data(self, x, reuse = False):
+        config = self.config
+
+        batch, l = tf.shape(x)[0], x.get_shape().as_list()[1]
+        with(tf.variable_scope('discriminator_minibatch', reuse=reuse)):
+            W = tf.get_variable('minibatch_weights', [l, config.minibatch_num * config.minibatch_len], initializer = tf.truncated_normal_initializer())
+            minibatch_data = tf.matmul(x, W)
+            #TODO: find better way
+            diff = tf.expand_dims(minibatch_data, -1) - tf.transpose(minibatch_data, [1, 0])
+            diff = tf.reshape(diff, [batch, config.minibatch_num, config.minibatch_len, batch])
+            diff_norm = l1norm(diff, axis = -2)
+            # diff_norm has zeros on main diagonal, thus "-1"
+            addition = tf.reduce_sum(tf.exp(-diff_norm), axis = -1) - 1
+            #addition = tf.Print(addition, [x], message='TF print:')
+        return tf.concat((x, addition), axis = -1)
+
     def is_fake(self, code, reuse = False):
         with (tf.variable_scope('discriminator_add', reuse = reuse)):
             fake_detector = tf.layers.dense(code, 1)
@@ -247,13 +266,17 @@ class SemiSupCapsNet():
         self.codes = self.run_encoder(images, False, training)
         features = tf.contrib.layers.flatten(self.codes)
         self.real_features, self.fake_features = tf.split(features, sizes)
+        self.real_features = self.add_minibatch_data(self.real_features)
+        self.fake_features = self.add_minibatch_data(self.fake_features, reuse = True)
+        minibatch_features = tf.concat((self.real_features, self.fake_features), 0)
 
+        #minibatch_features = tf.verify_tensor_all_finite(minibatch_features, 'Not all values are finite with minibatch')
         self.inputs_code, self.gen_code = tf.split(self.codes, sizes)
         self.reconstructed = self.generate_from_code(self.inputs_code, True, training)
-        self.orig, self.fake = tf.split(self.is_fake(features), sizes)
+        self.orig, self.fake = tf.split(self.is_fake(minibatch_features), sizes)
 
     def get_feature_matching_loss(self):
-        return tf.reduce_sum(tf.abs(tf.reduce_mean(self.real_features, 0) - tf.reduce_mean(self.fake_features, 0)))
+        return l2norm(tf.reduce_mean(self.real_features, 0) - tf.reduce_mean(self.fake_features, 0))
 
     def loss_function(self, targets, images):
         lconfig = self.config.loss_config
@@ -262,16 +285,16 @@ class SemiSupCapsNet():
         loss_on_targets = lconfig.label_smoothing * targets_mask * tf.nn.softmax_cross_entropy_with_logits(labels = targets, logits = norm(self.inputs_code))
         loss_on_gen = tf.nn.softmax_cross_entropy_with_logits(labels = self.code_labels, logits = norm(self.gen_code))
         reconstruction_loss = tanh_cross_entropy(logits = self.reconstructed, labels = images)
-        orig_detection_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = tf.ones_like(self.orig), logits = self.orig)
+        orig_detection_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = lconfig.label_smoothing * tf.ones_like(self.orig), logits = self.orig)
         fake_detection_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = tf.zeros_like(self.fake), logits = self.fake)
-        fake_error_detection_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = tf.ones_like(self.fake), logits = self.fake)
+        fake_error_detection_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = lconfig.label_smoothing * tf.ones_like(self.fake), logits = self.fake)
         feature_matching_loss = self.get_feature_matching_loss()
 
         d_loss = tf.reduce_sum(loss_on_targets)# + 0.0001 * tf.reduce_sum(reconstruction_loss) #+ 0.01 * tf.reduce_sum(loss_on_gen)
         d_loss += tf.reduce_sum(orig_detection_loss) + tf.reduce_sum(fake_detection_loss)
 
         #g_loss = 0.0001 * tf.reduce_sum(reconstruction_loss) # + 0.01 * tf.reduce_sum(loss_on_gen)
-        #g_loss += tf.reduce_sum(fake_error_detection_loss)
+        #g_loss = tf.reduce_sum(fake_error_detection_loss)
         g_loss = feature_matching_loss
         return d_loss, g_loss
 

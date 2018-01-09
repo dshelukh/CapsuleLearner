@@ -33,6 +33,12 @@ def squash(arr, axis = -1):
 def norm(arr, axis = -1):
     return tf.sqrt(tf.reduce_sum(tf.square(arr), axis))
 
+def l1norm(arr, axis = -1):
+    return tf.reduce_sum(tf.abs(arr), axis = axis)
+
+def l2norm(arr, axis = -1):
+    return tf.reduce_sum(tf.square(arr), axis = axis)
+
 # converts array with norm to a mask for element with maximum norm
 def maskForMaxCapsule(arr):
     num_outputs = arr.shape[-1]

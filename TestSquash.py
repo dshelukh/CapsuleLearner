@@ -47,6 +47,26 @@ class TestSquash(unittest.TestCase):
         result = self.run_tool(arr, 0, tool = norm)
         np.testing.assert_allclose(result, [5.0, 5.0], atol = 0.000001)
 
+    def test_l1norm_1(self):
+        arr = np.array([1.0, -1.0])
+        result = self.run_tool(arr, tool = l1norm)
+        np.testing.assert_allclose(result, [2.0], atol = 0.000001)
+
+    def test_l1norm_2(self):
+        arr = np.array([[1.0, -2.0], [-3.0, 4.0]])
+        result = self.run_tool(arr, 0, tool = l1norm)
+        np.testing.assert_allclose(result, [4.0, 6.0], atol = 0.000001)
+
+    def test_l2norm_1(self):
+        arr = np.array([1.5, 0.5])
+        result = self.run_tool(arr, tool = l2norm)
+        np.testing.assert_allclose(result, [2.5], atol = 0.000001)
+
+    def test_l2norm_2(self):
+        arr = np.array([[-3.0, -1.0], [4.0, 0.0]])
+        result = self.run_tool(arr, 0, tool = l2norm)
+        np.testing.assert_allclose(result, [25.0, 1.0], atol = 0.000001)
+
     def test_mask_1(self):
         arr = np.array([[1, 2, 3], [3, 2, 1]])
         result = self.run_tool(arr, tool = maskForMaxCapsule)

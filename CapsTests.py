@@ -42,7 +42,7 @@ class CapsTests(unittest.TestCase):
         placeholder = tf.placeholder(tf.float32, [None, 28, 28, 1])
         network = SimpleCapsNet()
         network.run(placeholder)
-        saver = CustomSaver()
+        saver = CustomSaver(['test', 'test/epochend'])
         with tf.Session() as sess:
             sess.run(tf.global_variables_initializer())
             saver.save_session(sess, True, (90))
@@ -69,8 +69,12 @@ class CapsTests(unittest.TestCase):
             r = sess.run(grads2, feed_dict={x: [[2, 2], [4, 4]], y:[[3, 3], [5, 5]]})
         np.testing.assert_array_equal(r, [[[6, 6], [10, 10]]]) # 2 * y
 
-
-
+    def test_4(self):
+        x = tf.placeholder(tf.float32, [2, 3])
+        with tf.Session() as sess:
+            ext = tf.expand_dims(x, -1)
+            y = sess.run(norm(ext - tf.transpose(x, [1, 0]), axis = -2), feed_dict={x: [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]})
+        np.testing.assert_allclose(y, [[0.0, 5.19615221], [5.19615221, 0.0]], 1e-5)
 
 
 
