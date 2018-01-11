@@ -15,7 +15,7 @@ parser = argparse.ArgumentParser(description='Train semi-supervised net on Svhn'
 mode_help = ('semi - run semi-supervised network only, ' +
              'ae - run autoencoder part only, ' +
              'both - run autoencoder and convert it to semi-supervised network')
-parser.add_argument('--mode', default = 'semi', choices = ['ae', 'semi', 'both'],
+parser.add_argument('--mode', default = 'semi', choices = ['ae', 'semi', 'both', 'none'],
                     help = mode_help)
 parser.add_argument('-b', default = '150', type=int, help = 'batch size to use')
 parser.add_argument('-l', default = '1000', type=int, help = 'number of labels to use in training')
@@ -29,7 +29,7 @@ batch_size = args['b']
 leave_num = args['l']
 
 need_resave = False
-dataset = SvhnDataset(0.15, leave_num).get_dataset_for_trainer()
+dataset = SvhnDataset(0.05, leave_num).get_dataset_for_trainer()
 network_base = SemiSupCapsNet() #SemiSupervisedNetwork()
 dataset.code_size = network_base.config.code_size
 params = TrainerParams()
@@ -46,10 +46,12 @@ if (mode == 'ae' or mode == 'both'):
     trainer.train(saver)
     need_resave = True
 
+network2 = Network(network_base, *network_base.get_functions_for_trainer()) #get_semi_functions_for_trainer())
 if (mode == 'semi' or mode == 'both'):
     tf.reset_default_graph()
     dataset.with_randoms = True
-    network2 = Network(network_base, *network_base.get_functions_for_trainer()) #get_semi_functions_for_trainer())
+    (images, randoms), _ = dataset.get_batch(dataset.val, 0, batch_size, False)
+    network_base.set_reference_batch(randoms)
     trainer2 = Trainer(network2, dataset, params)
     saver2 = CustomSaver(folders=[save_folder + '/semi', save_folder + '/semi/epoch'])
     if (need_resave):
@@ -62,13 +64,14 @@ if (mode == 'semi' or mode == 'both'):
 
 '''
 tf.reset_default_graph()
+dataset.with_randoms = True
 trainer = Trainer(network2, dataset, params)
-last_saved = tf.train.latest_checkpoint(base_folder + '/semi')
+last_saved = tf.train.latest_checkpoint(save_folder + '/semi')
 inputs = tf.placeholder(tf.float32, [None, 32, 32, 3])
-z = tf.placeholder(tf.float32, [None, 90])
-
+z = tf.placeholder(tf.float32, [None, network_base.config.code_size])
+saver = CustomSaver(['semi-supervised-4/semi', 'semi-supervised-3/semi/epoch'])
 with tf.Session() as sess:
-    saver.restore_session(sess)
+    saver.restore_session(sess, True)
     (images, randoms), _ = dataset.get_batch(dataset.val, 0, 6, False)
     
     #images2 = np.rollaxis(testset['X'], 3)[:6]

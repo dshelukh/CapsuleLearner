@@ -168,8 +168,8 @@ class SemiSupLossConfig():
 class SemiSupCapsConfig():
     def __init__(self, num_outputs = 10, caps1_len = 8, caps2_len = 16, capsg_len = 8, capsg_size = [8, 8, 32], loss_config = SemiSupLossConfig()):
         # discriminator
-        self.conv1_info = ConvData(128, 3, 2)
-        self.conv2_info = ConvData(128, 3, 2)
+        self.conv1_info = ConvData(128, 5, 2)
+        self.conv2_info = ConvData(128, 5, 2)
         self.caps1_len = caps1_len
 
         self.caps2_len = caps2_len
@@ -183,14 +183,37 @@ class SemiSupCapsConfig():
         # generator
         self.capsg_len = capsg_len
         self.capsg_size = capsg_size
-        self.deconv1_info = ConvData(128, 3, 2)
-        self.deconv2_info = ConvData(3, 3, 2)
+        self.deconv1_info = ConvData(128, 5, 2)
+        self.deconv2_info = ConvData(3, 5, 2)
 
+        self.use_minibatch = False
+        self.with_reconstruction = False
         self.loss_config = loss_config
+
+def batch_norm_with_ref(data, ref_size, training, name):
+    x = data
+    ref_size = 0 if ref_size is None else ref_size
+    x, bn_data = tf.split(x, [tf.shape(x)[0] - ref_size, ref_size])
+
+    if ref_size != 0:
+        bn_data = tf.layers.batch_normalization(bn_data, training = training, name = name)
+        training = False
+
+    with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
+        x = tf.layers.batch_normalization(x, training = training, name = name, reuse = tf.AUTO_REUSE)
+
+    x = tf.concat((x, bn_data), 0)
+    return x
 
 class SemiSupCapsNet():
     def __init__(self, config = SemiSupCapsConfig()):
         self.config = config
+        self.ref_batch = None
+
+    def set_reference_batch(self, ref_batch):
+        # first num_outputs is a label
+        ref_batch = np.reshape(ref_batch[:, self.config.num_outputs:], [-1, self.config.num_outputs, self.config.caps2_len])
+        self.ref_batch = tf.convert_to_tensor(ref_batch, dtype = tf.float32)
 
     def run_encoder(self, inputs, reuse = False, training = False):
         config = self.config
@@ -203,7 +226,7 @@ class SemiSupCapsNet():
 
             conv2_info = config.conv2_info
             conv2 = tf.layers.conv2d(conv1, conv2_info.num_features, conv2_info.kernel, conv2_info.stride, padding = 'same')
-            #conv2 = tf.layers.batch_normalization(conv2, training = training) # do we need it?
+            conv2 = tf.layers.batch_normalization(conv2, training = training) # do we need it?
 
             caps1 = squash(reshapeToCapsules(tf.transpose(conv2, [0, 3, 1, 2]), config.caps1_len, axis = 1))
             caps_layer = CapsLayer(caps1, config.num_outputs, config.caps2_len)
@@ -212,25 +235,41 @@ class SemiSupCapsNet():
 
     def get_masked_code(self, code):
         masked = tf.multiply(code, maskForMaxCapsule(norm(code)))
-        return masked # tf.contrib.layers.flatten(masked)
+        return masked
 
-    def generate_from_code(self, masked_code, reuse = False, training = True):
+    def get_virtual_batch_data(self, data):
+        ref_size = None
+        if (self.ref_batch is not None):
+            ref_size = tf.shape(self.ref_batch)[0]
+            data = tf.concat((data, self.ref_batch), 0)
+        return ref_size, data
+
+    def return_from_virtual_batch(self, data, ref_size):
+        if (ref_size is not None):
+            data = data[:ref_size]
+            #data = tf.Print(data, [ref_size, tf.shape(data)], 'return data:', summarize = 5)
+        return data
+
+    def generate_from_code(self, code, reuse = False, training = True):
         config = self.config
 
+        ref_size, code = self.get_virtual_batch_data(code)
+
         with(tf.variable_scope('generator', reuse=reuse)):
-            caps = squash(masked_code)
+            caps = squash(code)
             caps_layer = CapsLayer(caps, np.prod(config.capsg_size), config.capsg_len)
             caps2 = caps_layer.do_dynamic_routing()
             reshaped = tf.reshape(caps2, [-1, config.capsg_size[0], config.capsg_size[1], config.capsg_size[2] * config.capsg_len])
+            reshaped = batch_norm_with_ref(reshaped, ref_size, training = training, name = 'ref_batch_norm1')
 
             deconv1_info = config.deconv1_info
             gconv1 = tf.layers.conv2d_transpose(reshaped, *(deconv1_info.get_conv_data()))
-            gconv1 = tf.layers.batch_normalization(gconv1, training = training)
+            gconv1 = batch_norm_with_ref(gconv1, ref_size, training = training, name = 'ref_batch_norm2')
             gconv1 = leaky_relu(gconv1, config.leaky_alpha)
 
             deconv2_info = config.deconv2_info
             gconv2 = tf.layers.conv2d_transpose(gconv1, *(deconv2_info.get_conv_data()))
-            return gconv2
+            return self.return_from_virtual_batch(gconv2, ref_size)
 
     def add_minibatch_data(self, x, reuse = False):
         config = self.config
@@ -242,10 +281,9 @@ class SemiSupCapsNet():
             #TODO: find better way
             diff = tf.expand_dims(minibatch_data, -1) - tf.transpose(minibatch_data, [1, 0])
             diff = tf.reshape(diff, [batch, config.minibatch_num, config.minibatch_len, batch])
-            diff_norm = l1norm(diff, axis = -2)
+            diff_norm = l1norm(diff, axis = -2) # euclidean norm here results in nan in gradients (of generator's convolution...)
             # diff_norm has zeros on main diagonal, thus "-1"
             addition = tf.reduce_sum(tf.exp(-diff_norm), axis = -1) - 1
-            #addition = tf.Print(addition, [x], message='TF print:')
         return tf.concat((x, addition), axis = -1)
 
     def is_fake(self, code, reuse = False):
@@ -259,6 +297,7 @@ class SemiSupCapsNet():
         code = code[:, config.num_outputs:]
         caps_code = tf.reshape(code, [-1, config.num_outputs, config.caps2_len])
         self.code_labels = tf.one_hot(tf.argmax(norm(caps_code), axis = -1), config.num_outputs)
+
         self.generated = self.generate_from_code(caps_code, False, training)
 
         images = tf.concat((inputs, tf.tanh(self.generated)), axis = 0)
@@ -266,36 +305,46 @@ class SemiSupCapsNet():
         self.codes = self.run_encoder(images, False, training)
         features = tf.contrib.layers.flatten(self.codes)
         self.real_features, self.fake_features = tf.split(features, sizes)
-        self.real_features = self.add_minibatch_data(self.real_features)
-        self.fake_features = self.add_minibatch_data(self.fake_features, reuse = True)
+
+        if config.use_minibatch:
+            self.real_features = self.add_minibatch_data(self.real_features)
+            self.fake_features = self.add_minibatch_data(self.fake_features, reuse = True)
         minibatch_features = tf.concat((self.real_features, self.fake_features), 0)
 
-        #minibatch_features = tf.verify_tensor_all_finite(minibatch_features, 'Not all values are finite with minibatch')
+        #minibatch_features = tf.verify_tensor_all_finite(minibatch_features, 'Not all values are finite within minibatch')
         self.inputs_code, self.gen_code = tf.split(self.codes, sizes)
-        self.reconstructed = self.generate_from_code(self.inputs_code, True, training)
+        if config.with_reconstruction:
+            self.reconstructed = self.generate_from_code(self.inputs_code, True, training)
         self.orig, self.fake = tf.split(self.is_fake(minibatch_features), sizes)
 
     def get_feature_matching_loss(self):
-        return l2norm(tf.reduce_mean(self.real_features, 0) - tf.reduce_mean(self.fake_features, 0))
+        num_features = tf.cast(tf.shape(self.real_features)[1], tf.float32)
+        return l2norm(tf.reduce_mean(self.real_features, 0) - tf.reduce_mean(self.fake_features, 0))# / num_features
+
+    def get_reconstruction_loss(self, images):
+        if self.config.with_reconstruction:
+            return tf.reduce_mean(tanh_cross_entropy(logits = self.reconstructed, labels = images), axis = -1)
+        else:
+            return 0.0
 
     def loss_function(self, targets, images):
         lconfig = self.config.loss_config
         targets_mask = tf.reduce_sum(targets, axis = -1)
 
         loss_on_targets = lconfig.label_smoothing * targets_mask * tf.nn.softmax_cross_entropy_with_logits(labels = targets, logits = norm(self.inputs_code))
-        loss_on_gen = tf.nn.softmax_cross_entropy_with_logits(labels = self.code_labels, logits = norm(self.gen_code))
-        reconstruction_loss = tanh_cross_entropy(logits = self.reconstructed, labels = images)
+        loss_on_gen = tf.nn.softmax_cross_entropy_with_logits(labels = lconfig.label_smoothing * self.code_labels, logits = norm(self.gen_code))
+        reconstruction_loss = self.get_reconstruction_loss(images)
         orig_detection_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = lconfig.label_smoothing * tf.ones_like(self.orig), logits = self.orig)
         fake_detection_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = tf.zeros_like(self.fake), logits = self.fake)
         fake_error_detection_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = lconfig.label_smoothing * tf.ones_like(self.fake), logits = self.fake)
         feature_matching_loss = self.get_feature_matching_loss()
 
-        d_loss = tf.reduce_sum(loss_on_targets)# + 0.0001 * tf.reduce_sum(reconstruction_loss) #+ 0.01 * tf.reduce_sum(loss_on_gen)
+        d_loss = tf.reduce_sum(loss_on_targets) + 0.0001 * tf.reduce_sum(reconstruction_loss) # + 0.1 * tf.reduce_sum(loss_on_gen)#
         d_loss += tf.reduce_sum(orig_detection_loss) + tf.reduce_sum(fake_detection_loss)
 
         #g_loss = 0.0001 * tf.reduce_sum(reconstruction_loss) # + 0.01 * tf.reduce_sum(loss_on_gen)
         #g_loss = tf.reduce_sum(fake_error_detection_loss)
-        g_loss = feature_matching_loss
+        g_loss = feature_matching_loss # + 0.1 * tf.reduce_sum(loss_on_gen)
         return d_loss, g_loss
 
     def get_num_classified(self, targets, labels):
