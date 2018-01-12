@@ -13,7 +13,7 @@ class LossConfig():
         self.margin_m_minus = 0.1
         self.margin_lambda = 0.5
 
-        self.reconstruction_coef = 0.0001
+        self.reconstruction_coef = 0.0005
 
 class ConfigCapsNet():
     def __init__(self):
@@ -62,7 +62,7 @@ class SimpleCapsNet():
     def lossFunction(self, targets):
         loss_config = self.config.loss_config
         margin_loss = targets * tf.square(tf.maximum(0.0, loss_config.margin_m_plus - self.output_norms))
-        margin_loss += (1 - targets) * tf.square(tf.maximum(0.0, self.output_norms - loss_config.margin_m_minus))
+        margin_loss += loss_config.margin_lambda * (1.0 - targets) * tf.square(tf.maximum(0.0, self.output_norms - loss_config.margin_m_minus))
         margin_loss = tf.reduce_sum(margin_loss, axis = 1)
 
         reconstruction_loss = 0.0

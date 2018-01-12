@@ -164,6 +164,9 @@ class SemiSupervisedNetwork():
 class SemiSupLossConfig():
     def __init__(self, label_smoothing = 0.9):
         self.label_smoothing = label_smoothing
+        self.margin_m_plus = 0.9
+        self.margin_m_minus = 0.1
+        self.margin_lambda = 0.9
 
 class SemiSupCapsConfig():
     def __init__(self, num_outputs = 10, caps1_len = 8, caps2_len = 16, capsg_len = 8, capsg_size = [8, 8, 32], loss_config = SemiSupLossConfig()):
@@ -223,6 +226,7 @@ class SemiSupCapsNet():
             conv1 = tf.layers.conv2d(inputs, conv1_info.num_features, conv1_info.kernel, conv1_info.stride, padding = 'same')
             conv1 = tf.layers.batch_normalization(conv1, training = training)
             conv1 = leaky_relu(conv1, config.leaky_alpha)
+            conv1 = tf.layers.dropout(conv1, 0.5, training = training)
 
             conv2_info = config.conv2_info
             conv2 = tf.layers.conv2d(conv1, conv2_info.num_features, conv2_info.kernel, conv2_info.stride, padding = 'same')
@@ -231,6 +235,7 @@ class SemiSupCapsNet():
             caps1 = squash(reshapeToCapsules(tf.transpose(conv2, [0, 3, 1, 2]), config.caps1_len, axis = 1))
             caps_layer = CapsLayer(caps1, config.num_outputs, config.caps2_len)
             caps2 = caps_layer.do_dynamic_routing()
+            #caps2 = tf.layers.dropout(caps2, 0.5, training = training)
             return caps2
 
     def get_masked_code(self, code):
@@ -327,25 +332,43 @@ class SemiSupCapsNet():
         else:
             return 0.0
 
+    def get_loss_on_targets(self, targets):
+        loss_config = self.config.loss_config
+        smooth = loss_config.label_smoothing
+        targets_mask = tf.reduce_sum(targets, axis = -1)
+        output = norm(self.inputs_code)
+
+        margin_loss = targets * tf.square(tf.maximum(0.0, smooth - output))
+        margin_loss += loss_config.margin_lambda * (1.0 - targets) * tf.square(output) #tf.maximum(0.0, output)) no smoothing on this side
+        loss = targets_mask * tf.reduce_sum(margin_loss, axis = 1)
+        # Documentation says labels should be a proper distribution, so not sure about using smoothing like this
+        # loss = targets_mask * tf.nn.softmax_cross_entropy_with_logits(labels = smooth * targets, logits = norm(self.inputs_code))
+        return (tf.to_float(tf.shape(targets)[0]) * tf.reduce_sum(loss)) / (tf.reduce_sum(targets_mask) + 1e-6)
+
+    def get_fake_detection_loss(self, labels, logits):
+        smooth = self.config.loss_config.label_smoothing
+        loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = smooth * labels, logits = logits)
+        return tf.reduce_sum(loss)
+
     def loss_function(self, targets, images):
         lconfig = self.config.loss_config
         targets_mask = tf.reduce_sum(targets, axis = -1)
 
-        loss_on_targets = lconfig.label_smoothing * targets_mask * tf.nn.softmax_cross_entropy_with_logits(labels = targets, logits = norm(self.inputs_code))
+        loss_on_targets = self.get_loss_on_targets(targets)
         loss_on_gen = tf.nn.softmax_cross_entropy_with_logits(labels = lconfig.label_smoothing * self.code_labels, logits = norm(self.gen_code))
         reconstruction_loss = self.get_reconstruction_loss(images)
-        orig_detection_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = lconfig.label_smoothing * tf.ones_like(self.orig), logits = self.orig)
-        fake_detection_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = tf.zeros_like(self.fake), logits = self.fake)
-        fake_error_detection_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = lconfig.label_smoothing * tf.ones_like(self.fake), logits = self.fake)
+        orig_detection_loss = self.get_fake_detection_loss(labels = tf.ones_like(self.orig), logits = self.orig)
+        fake_detection_loss = self.get_fake_detection_loss(labels = tf.zeros_like(self.fake), logits = self.fake)
+        fake_error_detection_loss = self.get_fake_detection_loss(labels = tf.ones_like(self.fake), logits = self.fake)
         feature_matching_loss = self.get_feature_matching_loss()
 
-        d_loss = tf.reduce_sum(loss_on_targets) + 0.0001 * tf.reduce_sum(reconstruction_loss) # + 0.1 * tf.reduce_sum(loss_on_gen)#
-        d_loss += tf.reduce_sum(orig_detection_loss) + tf.reduce_sum(fake_detection_loss)
+        d_loss = loss_on_targets + 0.0001 * tf.reduce_sum(reconstruction_loss) # + 0.1 * tf.reduce_sum(loss_on_gen)#
+        d_loss += orig_detection_loss + fake_detection_loss
 
         #g_loss = 0.0001 * tf.reduce_sum(reconstruction_loss) # + 0.01 * tf.reduce_sum(loss_on_gen)
         #g_loss = tf.reduce_sum(fake_error_detection_loss)
         g_loss = feature_matching_loss # + 0.1 * tf.reduce_sum(loss_on_gen)
-        return d_loss, g_loss
+        return d_loss, g_loss, loss_on_targets, orig_detection_loss, fake_detection_loss
 
     def get_num_classified(self, targets, labels):
         labels_mask = tf.reduce_sum(targets, axis = -1)

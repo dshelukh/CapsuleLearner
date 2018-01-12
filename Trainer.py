@@ -98,6 +98,15 @@ def placeholders_from_sizes(info_list):
         p.append(tf.placeholder(tf.float32, [None, *i.shape]))
     return tuple(p)
 
+def print_losses(losses):
+    if isinstance(losses, float):
+        return '%.6f' % losses
+    str = '[ '
+    for loss in losses:
+        str += ('%.6f ' % loss)
+    str += ']'
+    return str
+
 class Trainer():
 
     def __init__(self, network, dataset, params = TrainerParams()):
@@ -172,21 +181,21 @@ class Trainer():
                     train_loss = np.array(train_loss)
                     #writer.close()
                     self.step_num += 1
-                    print('Epoch', self.cur_epoch,', step', self.step_num, '. Training loss: ' + str(train_loss / batch_size))
+                    print('Epoch', self.cur_epoch,', step', self.step_num, '. Training loss: ' + print_losses(train_loss / batch_size))
 
                     if (len(dataset.val.images) > 0 and self.step_num % self.params.val_check_period == 0):
                         new_loss, new_acc = self.run_on_dataset(sess, dataset.get_dataset('val'), batch_size)
                         if (sum(new_loss) < sum(self.cur_loss) - self.params.epsilon):
                             self.cur_loss = new_loss
                             save_path = saver.save_session(sess, params = (self.step_num, self.cur_epoch), save_data = (self.cur_epoch - 1, self.cur_loss, self.step_num))
-                            print('Model saved: ', save_path, 'Validation loss:', new_loss, 'Validation accuracy:', new_acc * 100)
+                            print('Model saved: ', save_path, 'Validation loss:', print_losses(new_loss), 'Validation accuracy:', new_acc * 100)
                             waiting_for = 0
                         else:
                             waiting_for += 1
-                            print('Model not saved, previous loss:', self.cur_loss, ', new loss:', new_loss, 'Accuracy: ', new_acc * 100)
+                            print('Model not saved, previous loss:', print_losses(self.cur_loss), ', new loss:', print_losses(new_loss), 'Accuracy: ', new_acc * 100)
 
                 test_loss, test_acc = self.run_on_dataset(sess, dataset.get_dataset('test'), batch_size)
-                print('Test accuracy after', self.cur_epoch, 'epoch: ', test_acc * 100, 'Test loss: ', test_loss)
+                print('Test accuracy after', self.cur_epoch, 'epoch: ', test_acc * 100, 'Test loss: ', print_losses(test_loss))
                 saver.save_session(sess, True, (self.cur_epoch), save_data = (self.cur_epoch, self.cur_loss, self.step_num))
                 if (waiting_for > self.params.threshold and self.params.early_stopping):
                     print('Loss didn\'t improve for %d checks' % self.params.threshold)

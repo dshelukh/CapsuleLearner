@@ -34,8 +34,10 @@ class CapsLayer():
             c = self.get_coupling_coef(b) # softmax on last dim = P(input is important for output)
             # transpose and multiply with c then sum up matricies along input capsules dimension
             s = tf.reduce_sum(tf.multiply(u_hats_split, c), 0)
+
             # squash along output capsule length axis
-            v = squash(s, 2)
+            v = squash(s, 1)
+
             # update b
             # v has shape [batch_size x output_capsule_len x num_outputs] , u_hats_split: [input_caps_num x <shape of v>]
             # is there a better way to do dot product?
