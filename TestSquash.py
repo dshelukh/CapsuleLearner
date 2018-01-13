@@ -31,7 +31,7 @@ class TestSquash(unittest.TestCase):
 
     def test_squash_3(self):
         arr = np.array([[1.0, 1.0], [1.0, 0.0]])
-        result = self.run_tool(arr, [0])
+        result = self.run_tool(arr, 0)
         val = math.sqrt(2) / 3
         np.testing.assert_allclose(result, [[val, 0.5], [val, 0.0]], atol = 0.000001)
 
@@ -57,14 +57,14 @@ class TestSquash(unittest.TestCase):
         result = self.run_tool(arr, 0, tool = l1norm)
         np.testing.assert_allclose(result, [4.0, 6.0], atol = 0.000001)
 
-    def test_l2norm_1(self):
+    def test_l2_squared_norm_1(self):
         arr = np.array([1.5, 0.5])
-        result = self.run_tool(arr, tool = l2norm)
+        result = self.run_tool(arr, tool = l2_squared_norm)
         np.testing.assert_allclose(result, [2.5], atol = 0.000001)
 
-    def test_l2norm_2(self):
+    def test_l2_squared_norm_2(self):
         arr = np.array([[-3.0, -1.0], [4.0, 0.0]])
-        result = self.run_tool(arr, 0, tool = l2norm)
+        result = self.run_tool(arr, 0, tool = l2_squared_norm)
         np.testing.assert_allclose(result, [25.0, 1.0], atol = 0.000001)
 
     def test_mask_1(self):

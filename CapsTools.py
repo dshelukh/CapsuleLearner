@@ -24,20 +24,22 @@ def reshapeToCapsules(arr, ndim, axis = 1):
     return tf.reshape(tf.transpose(arr2, reorder), result_shape)
 
 # basic squash along some axis
-def squash(arr, axis = -1):
-    squared_norm = tf.reduce_sum(tf.square(arr), axis, keep_dims=True)
-    norm = tf.sqrt(squared_norm)
-    coef = tf.divide(norm, tf.add(squared_norm, 1.0))
-    return tf.multiply(arr, coef)
+def squash(arr, axis = -1, epsilon = 1e-32):
+    squared_norm = l2_squared_norm(arr, axis, keep_dims = True)
+    # zero norm can cause nan gradients here, hence using epsilon (seems 1e-37 is still big enough, got nans with 1e-38)
+    norm_ = tf.sqrt(squared_norm + epsilon)
 
-def norm(arr, axis = -1):
-    return tf.sqrt(tf.reduce_sum(tf.square(arr), axis))
+    coef = tf.divide(norm_, tf.add(squared_norm, 1.0))
+    return tf.multiply(arr, coef)
 
 def l1norm(arr, axis = -1):
     return tf.reduce_sum(tf.abs(arr), axis = axis)
 
-def l2norm(arr, axis = -1):
-    return tf.reduce_sum(tf.square(arr), axis = axis)
+def l2_squared_norm(arr, axis = -1, keep_dims = False):
+    return tf.reduce_sum(tf.square(arr), axis = axis, keep_dims = keep_dims)
+
+def norm(arr, axis = -1, keep_dims = False):
+    return tf.sqrt(l2_squared_norm(arr, axis, keep_dims))
 
 # converts array with norm to a mask for element with maximum norm
 def maskForMaxCapsule(arr):

@@ -16,7 +16,8 @@ class CapsLayer():
         self.num_outputs = num_outputs
         self.capsule_len = out_len
 
-        self.W = tf.Variable(tf.truncated_normal((self.input_caps_num, self.input_caps_len, num_outputs*out_len)), name = self.name) # we'll split later
+        self.W = tf.Variable(tf.truncated_normal((self.input_caps_num, self.input_caps_len, num_outputs * out_len), stddev = self.num_outputs / self.input_caps_num),
+                             name = self.name) # we'll split num_outputs and out_len later
         self.r = r
 
     def get_coupling_coef(self, b):

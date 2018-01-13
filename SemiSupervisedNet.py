@@ -308,7 +308,7 @@ class SemiSupCapsNet():
         images = tf.concat((inputs, tf.tanh(self.generated)), axis = 0)
         sizes = [tf.shape(inputs)[0], tf.shape(self.generated)[0]]
         self.codes = self.run_encoder(images, False, training)
-        features = tf.contrib.layers.flatten(self.codes)
+        features = tf.contrib.layers.flatten(self.get_masked_code(self.codes))
         self.real_features, self.fake_features = tf.split(features, sizes)
 
         if config.use_minibatch:
@@ -324,7 +324,7 @@ class SemiSupCapsNet():
 
     def get_feature_matching_loss(self):
         num_features = tf.cast(tf.shape(self.real_features)[1], tf.float32)
-        return l2norm(tf.reduce_mean(self.real_features, 0) - tf.reduce_mean(self.fake_features, 0))# / num_features
+        return l1norm(tf.reduce_mean(self.real_features, 0) - tf.reduce_mean(self.fake_features, 0))# / num_features
 
     def get_reconstruction_loss(self, images):
         if self.config.with_reconstruction:
@@ -336,9 +336,9 @@ class SemiSupCapsNet():
         loss_config = self.config.loss_config
         smooth = loss_config.label_smoothing
         targets_mask = tf.reduce_sum(targets, axis = -1)
-        output = norm(self.inputs_code)
+        output = l1norm(self.inputs_code)
 
-        margin_loss = targets * tf.square(tf.maximum(0.0, smooth - output))
+        margin_loss = targets * tf.square(smooth - output)
         margin_loss += loss_config.margin_lambda * (1.0 - targets) * tf.square(output) #tf.maximum(0.0, output)) no smoothing on this side
         loss = targets_mask * tf.reduce_sum(margin_loss, axis = 1)
         # Documentation says labels should be a proper distribution, so not sure about using smoothing like this

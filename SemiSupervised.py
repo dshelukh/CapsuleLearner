@@ -29,7 +29,7 @@ batch_size = args['b']
 leave_num = args['l']
 
 need_resave = False
-dataset = SvhnDataset(0.05, leave_num).get_dataset_for_trainer()
+dataset = SvhnDataset(0.3, leave_num).get_dataset_for_trainer()
 network_base = SemiSupCapsNet() #SemiSupervisedNetwork()
 dataset.code_size = network_base.config.code_size
 params = TrainerParams()
@@ -60,16 +60,15 @@ if (mode == 'semi' or mode == 'both'):
             saver2.restore_session(sess, filename = saver2.get_last_saved(save_folder + '/ae'))
             saver2.save_session(sess, False, (0, 0), (0, [float('inf'), float('inf')], 0))
             print('Resaved!')
-    trainer2.train(saver2, restore_from_epochend = (not need_resave))
+    trainer2.train(saver2, restore_from_epochend = not need_resave))
 
-'''
+
 tf.reset_default_graph()
 dataset.with_randoms = True
 trainer = Trainer(network2, dataset, params)
-last_saved = tf.train.latest_checkpoint(save_folder + '/semi')
 inputs = tf.placeholder(tf.float32, [None, 32, 32, 3])
 z = tf.placeholder(tf.float32, [None, network_base.config.code_size])
-saver = CustomSaver(['semi-supervised-4/semi', 'semi-supervised-3/semi/epoch'])
+saver = CustomSaver([save_folder + '/semi', save_folder + '/semi/epoch'])
 with tf.Session() as sess:
     saver.restore_session(sess, True)
     (images, randoms), _ = dataset.get_batch(dataset.val, 0, 6, False)
@@ -90,4 +89,3 @@ with tf.Session() as sess:
 
     plt.subplots_adjust(wspace=0, hspace=0)
     plt.show()
-'''

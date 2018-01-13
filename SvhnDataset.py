@@ -20,9 +20,9 @@ class DatasetWithReconstruction(Dataset):
         self.num_labels = len(base[0].labels[0])
         self.code_size = code_size
         Dataset.__init__(self, base, *args)
-        print('num_labels:', self.num_labels)
+        print('num_labels:', self.num_labels, 'labels left:', np.sum(base[0].labels))
 
-    def get_batch(self, dataset, num, batch_size, shuffle = True):
+    def get_batch(self, dataset, num, batch_size, shuffle = True, guaranteed_labels = 5):
         start, end = batch_size * num, batch_size * (num + 1)
         ind = np.arange(len(dataset.images))
         if (shuffle):
@@ -30,6 +30,13 @@ class DatasetWithReconstruction(Dataset):
 
         X = dataset.images[ind[start:end]]
         y = dataset.labels[ind[start:end]]
+
+        if guaranteed_labels > 0:
+            labels_left = np.sum(dataset.labels)
+            # consider labeled data is in the beginning
+            labeled_id = np.random.randint(labels_left, size = guaranteed_labels)
+            X = np.concatenate((X[:-guaranteed_labels], dataset.images[labeled_id]), axis = 0)
+            y = np.concatenate((y[:-guaranteed_labels], dataset.labels[labeled_id]), axis = 0)
 
         if (self.with_reconstruction):
             y = (y, X)
@@ -52,7 +59,7 @@ def unscale(x, feature_range = (-1.0, 1.0)):
 
 class SvhnDataset():
     # leave_labels = -1 means use all labels
-    def __init__(self, val_split = 0.4, leave_labels = -1, feature_range = (-1, 1), data_dir = 'data/'):
+    def __init__(self, val_split = 0.3, leave_labels = -1, feature_range = (-1, 1), data_dir = 'data/'):
         self.num_labels = 10
         self.val_split = val_split
         self.leave_labels = leave_labels
@@ -85,17 +92,17 @@ class SvhnDataset():
 
         train_labels = self.onehot_y(trainset)
         zero_labels = np.zeros_like(train_labels)
+        l = len(train_labels)
         if self.leave_labels != -1:
             train_labels = np.concatenate((train_labels[:self.leave_labels], zero_labels[self.leave_labels:]), axis = 0)
+            l = self.leave_labels
+        train_imgs = self.preprocess(trainset['X'])
 
-        test_img = self.preprocess(testset['X'])
-        test_labels = self.onehot_y(testset)
-        l = len(testset['y'])
         val_split = int(l * self.val_split)
 
-        self.train = DatasetBase(self.preprocess(trainset['X']), train_labels)
-        self.val = DatasetBase(test_img[:val_split], test_labels[:val_split])
-        self.test = DatasetBase(test_img[val_split:], test_labels[val_split:])
+        self.train = DatasetBase(train_imgs[val_split:], train_labels[val_split:])
+        self.val = DatasetBase(train_imgs[:val_split], train_labels[:val_split])
+        self.test = DatasetBase(self.preprocess(testset['X']), self.onehot_y(testset))
 
         print('Train: inputs - ' + str(self.train.images.shape) + '\t outputs - ' + str(self.train.labels.shape))
         print('Val  : inputs - ' + str(self.val.images.shape) + '\t outputs - ' + str(self.val.labels.shape))
