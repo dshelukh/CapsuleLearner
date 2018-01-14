@@ -32,11 +32,22 @@ class DatasetWithReconstruction(Dataset):
         y = dataset.labels[ind[start:end]]
 
         if guaranteed_labels > 0:
-            labels_left = np.sum(dataset.labels)
+            guaranteed_labels = np.minimum(guaranteed_labels, batch_size)
+            total_labels_left = int(np.sum(dataset.labels))
+
+            labels_needed = np.maximum(guaranteed_labels - int(np.sum(y)), 0)
+            i = -1
+            unlabeled = []
+            while labels_needed > len(unlabeled):
+                if np.sum(y[i]) == 0:
+                    unlabeled.append(i)
+                i -= 1
+
             # consider labeled data is in the beginning
-            labeled_id = np.random.randint(labels_left, size = guaranteed_labels)
-            X = np.concatenate((X[:-guaranteed_labels], dataset.images[labeled_id]), axis = 0)
-            y = np.concatenate((y[:-guaranteed_labels], dataset.labels[labeled_id]), axis = 0)
+            labeled_id = np.random.randint(total_labels_left, size = labels_needed)
+            X[unlabeled] = dataset.images[labeled_id]
+            y[unlabeled] = dataset.labels[labeled_id]
+            assert(np.sum(y) >= guaranteed_labels)
 
         if (self.with_reconstruction):
             y = (y, X)
