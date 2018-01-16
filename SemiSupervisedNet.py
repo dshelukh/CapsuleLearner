@@ -156,7 +156,23 @@ class SemiSupervisedNetwork():
         return 'semi_loss', 'run_semi_supervised', 'num_classified_semi', 'get_minimizers_semi'
 
 
+class SemiCapsCodeGenerator():
+    def __init__(self, num_outputs, caps_len):
+        self.num_outputs = num_outputs
+        self.caps_len = caps_len
+        self.code_size = num_outputs * caps_len
 
+    def get_code(self, batch_size):
+        random_targets = np.eye(self.num_outputs)[np.random.randint(0, self.num_outputs, size = [batch_size])]
+        random_code = 2 * np.random.rand(batch_size, self.code_size) - 1 # shoud be like after tanh
+        randoms = np.concatenate((random_targets, random_code), axis = 1)
+        return self.preprocess_code(randoms)
+
+    def preprocess_code(self, code):
+        labels, data = code[:, :self.num_outputs], code[:, self.num_outputs:]
+        data = np.reshape(data, [-1, self.num_outputs, self.caps_len])
+        labels = np.expand_dims(labels, -1)
+        return labels * data # masking out all except capsule for label
 
 #
 # With Capsules
@@ -189,7 +205,7 @@ class SemiSupCapsConfig():
         self.deconv1_info = ConvData(128, 5, 2)
         self.deconv2_info = ConvData(3, 5, 2)
 
-        self.use_minibatch = False
+        self.use_minibatch = True
         self.with_reconstruction = False
         self.loss_config = loss_config
 
@@ -212,10 +228,11 @@ class SemiSupCapsNet():
     def __init__(self, config = SemiSupCapsConfig()):
         self.config = config
         self.ref_batch = None
+        self.code_gen = SemiCapsCodeGenerator(config.num_outputs, config.caps2_len)
 
     def set_reference_batch(self, ref_batch):
         # first num_outputs is a label
-        ref_batch = np.reshape(ref_batch[:, self.config.num_outputs:], [-1, self.config.num_outputs, self.config.caps2_len])
+        ref_batch = np.reshape(ref_batch, [-1, self.config.num_outputs, self.config.caps2_len])
         self.ref_batch = tf.convert_to_tensor(ref_batch, dtype = tf.float32)
 
     def run_encoder(self, inputs, reuse = False, training = False):
@@ -231,6 +248,7 @@ class SemiSupCapsNet():
             conv2_info = config.conv2_info
             conv2 = tf.layers.conv2d(conv1, conv2_info.num_features, conv2_info.kernel, conv2_info.stride, padding = 'same')
             conv2 = tf.layers.batch_normalization(conv2, training = training) # do we need it?
+            conv2 = tf.layers.dropout(conv2, 0.5, training = training)
 
             caps1 = squash(reshapeToCapsules(tf.transpose(conv2, [0, 3, 1, 2]), config.caps1_len, axis = 1))
             caps_layer = CapsLayer(caps1, config.num_outputs, config.caps2_len)
@@ -239,7 +257,7 @@ class SemiSupCapsNet():
             return caps2
 
     def get_masked_code(self, code):
-        masked = tf.multiply(code, maskForMaxCapsule(norm(code)))
+        masked = tf.multiply(code, maskForMaxCapsule(l1norm(code)))
         return masked
 
     def get_virtual_batch_data(self, data):
@@ -261,16 +279,25 @@ class SemiSupCapsNet():
         ref_size, code = self.get_virtual_batch_data(code)
 
         with(tf.variable_scope('generator', reuse=reuse)):
-            caps = squash(code)
-            caps_layer = CapsLayer(caps, np.prod(config.capsg_size), config.capsg_len)
+            caps0 = squash(code)
+            # only one active capsule expected, hence r = 1
+            caps_layer0 = CapsLayer(caps0, config.num_outputs, config.caps2_len, name = 'caps_layer_g_0', r = 1)
+            caps1 = caps_layer0.do_dynamic_routing()
+
+            caps_layer = CapsLayer(caps1, np.prod(config.capsg_size), config.capsg_len, name = 'caps_layer_g_1')
             caps2 = caps_layer.do_dynamic_routing()
             reshaped = tf.reshape(caps2, [-1, config.capsg_size[0], config.capsg_size[1], config.capsg_size[2] * config.capsg_len])
+            reshaped = tf.verify_tensor_all_finite(reshaped, 'Not all values are finite befire VBN1')
             reshaped = batch_norm_with_ref(reshaped, ref_size, training = training, name = 'ref_batch_norm1')
+            reshaped = tf.verify_tensor_all_finite(reshaped, 'Not all values are finite after VBN1')
 
             deconv1_info = config.deconv1_info
             gconv1 = tf.layers.conv2d_transpose(reshaped, *(deconv1_info.get_conv_data()))
+            gconv1 = tf.verify_tensor_all_finite(gconv1, 'Not all values are finite before VBN2')
             gconv1 = batch_norm_with_ref(gconv1, ref_size, training = training, name = 'ref_batch_norm2')
+            gconv1 = tf.verify_tensor_all_finite(gconv1, 'Not all values are finite after VBN2')
             gconv1 = leaky_relu(gconv1, config.leaky_alpha)
+            gconv1 = tf.layers.dropout(gconv1, 0.5, training = training)
 
             deconv2_info = config.deconv2_info
             gconv2 = tf.layers.conv2d_transpose(gconv1, *(deconv2_info.get_conv_data()))
@@ -287,7 +314,7 @@ class SemiSupCapsNet():
             diff = tf.expand_dims(minibatch_data, -1) - tf.transpose(minibatch_data, [1, 0])
             diff = tf.reshape(diff, [batch, config.minibatch_num, config.minibatch_len, batch])
             diff_norm = l1norm(diff, axis = -2) # euclidean norm here results in nan in gradients (of generator's convolution...)
-            # diff_norm has zeros on main diagonal, thus "-1"
+            # diff_norm has zeros on main diagonal, hence subtract one.
             addition = tf.reduce_sum(tf.exp(-diff_norm), axis = -1) - 1
         return tf.concat((x, addition), axis = -1)
 
@@ -298,29 +325,32 @@ class SemiSupCapsNet():
 
     def run(self, inputs, code, training = True):
         config = self.config
+        # code should have shape [batch_size x num_labels x caps_len]
+        self.code_labels = tf.one_hot(tf.argmax(norm(code), axis = -1), config.num_outputs)
 
-        code = code[:, config.num_outputs:]
-        caps_code = tf.reshape(code, [-1, config.num_outputs, config.caps2_len])
-        self.code_labels = tf.one_hot(tf.argmax(norm(caps_code), axis = -1), config.num_outputs)
+        # generate images from code
+        self.generated = self.generate_from_code(code, False, training)
 
-        self.generated = self.generate_from_code(caps_code, False, training)
-
+        # combine generated images with real ones and run classificator
         images = tf.concat((inputs, tf.tanh(self.generated)), axis = 0)
         sizes = [tf.shape(inputs)[0], tf.shape(self.generated)[0]]
         self.codes = self.run_encoder(images, False, training)
+        self.inputs_code, self.gen_code = tf.split(self.codes, sizes)
+
+        # mask out all capsules but the one with largest norm and add minibatch features (if needed)
         features = tf.contrib.layers.flatten(self.get_masked_code(self.codes))
         self.real_features, self.fake_features = tf.split(features, sizes)
-
         if config.use_minibatch:
             self.real_features = self.add_minibatch_data(self.real_features)
             self.fake_features = self.add_minibatch_data(self.fake_features, reuse = True)
-        minibatch_features = tf.concat((self.real_features, self.fake_features), 0)
+        output_features = tf.concat((self.real_features, self.fake_features), 0)
 
-        #minibatch_features = tf.verify_tensor_all_finite(minibatch_features, 'Not all values are finite within minibatch')
-        self.inputs_code, self.gen_code = tf.split(self.codes, sizes)
+        output_features = tf.verify_tensor_all_finite(output_features, 'Not all values are finite within minibatch')
+
         if config.with_reconstruction:
             self.reconstructed = self.generate_from_code(self.inputs_code, True, training)
-        self.orig, self.fake = tf.split(self.is_fake(minibatch_features), sizes)
+        # discriminate fake and original images
+        self.orig, self.fake = tf.split(self.is_fake(output_features), sizes)
 
     def get_feature_matching_loss(self):
         num_features = tf.cast(tf.shape(self.real_features)[1], tf.float32)
@@ -352,7 +382,6 @@ class SemiSupCapsNet():
 
     def loss_function(self, targets, images):
         lconfig = self.config.loss_config
-        targets_mask = tf.reduce_sum(targets, axis = -1)
 
         loss_on_targets = self.get_loss_on_targets(targets)
         loss_on_gen = tf.nn.softmax_cross_entropy_with_logits(labels = lconfig.label_smoothing * self.code_labels, logits = norm(self.gen_code))
@@ -391,4 +420,9 @@ class SemiSupCapsNet():
 
     def get_functions_for_trainer(self):
         return 'loss_function', 'run', 'num_classified', 'get_minimizers'
+
+    def get_code_generator(self):
+        return self.code_gen
+
+
 

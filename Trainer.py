@@ -196,7 +196,7 @@ class Trainer():
 
                 test_loss, test_acc = self.run_on_dataset(sess, dataset.get_dataset('test'), batch_size)
                 print('Test accuracy after', self.cur_epoch, 'epoch: ', test_acc * 100, 'Test loss: ', print_losses(test_loss))
-                saver.save_session(sess, True, (self.cur_epoch), save_data = (self.cur_epoch, self.cur_loss, self.step_num))
+                saver.save_session(sess, True, (self.cur_epoch), save_data = (self.cur_epoch, test_loss, self.step_num))
                 if (waiting_for > self.params.threshold and self.params.early_stopping):
                     print('Loss didn\'t improve for %d checks' % self.params.threshold)
                     break

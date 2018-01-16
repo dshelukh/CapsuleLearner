@@ -31,7 +31,7 @@ leave_num = args['l']
 need_resave = False
 dataset = SvhnDataset(0.3, leave_num).get_dataset_for_trainer()
 network_base = SemiSupCapsNet() #SemiSupervisedNetwork()
-dataset.code_size = network_base.config.code_size
+
 params = TrainerParams()
 params.batch_size = batch_size
 params.val_check_period = 50
@@ -49,7 +49,7 @@ if (mode == 'ae' or mode == 'both'):
 network2 = Network(network_base, *network_base.get_functions_for_trainer()) #get_semi_functions_for_trainer())
 if (mode == 'semi' or mode == 'both'):
     tf.reset_default_graph()
-    dataset.with_randoms = True
+    dataset.set_code_generator(network_base.get_code_generator())
     (images, randoms), _ = dataset.get_batch(dataset.val, 0, batch_size, False)
     network_base.set_reference_batch(randoms)
     trainer2 = Trainer(network2, dataset, params)
@@ -60,11 +60,11 @@ if (mode == 'semi' or mode == 'both'):
             saver2.restore_session(sess, filename = saver2.get_last_saved(save_folder + '/ae'))
             saver2.save_session(sess, False, (0, 0), (0, [float('inf'), float('inf')], 0))
             print('Resaved!')
-    trainer2.train(saver2, restore_from_epochend = not need_resave))
+    trainer2.train(saver2, restore_from_epochend = not need_resave)
 
 
 tf.reset_default_graph()
-dataset.with_randoms = True
+dataset.set_code_generator(network_base.get_code_generator())
 trainer = Trainer(network2, dataset, params)
 inputs = tf.placeholder(tf.float32, [None, 32, 32, 3])
 z = tf.placeholder(tf.float32, [None, network_base.config.code_size])
@@ -75,7 +75,7 @@ with tf.Session() as sess:
     
     #images2 = np.rollaxis(testset['X'], 3)[:6]
     #images2 = sess.run(network_base.img, feed_dict={trainer.input_data: images, trainer.training: False})
-    images2 = sess.run(network_base.generated, feed_dict={trainer.input_data: (images, randoms), trainer.training: False})
+    images2 = sess.run(tf.tanh(network_base.generated), feed_dict={trainer.input_data: (images, randoms), trainer.training: False})
     images = np.concatenate((images, images2), axis = 0)
     images = unscale(images)
     fig, axes = plt.subplots(2, 6, sharex=True, sharey=True, figsize=(12,3),)

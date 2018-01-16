@@ -14,13 +14,15 @@ from scipy.io import loadmat
 # Like Dataset in Trainer but also returns initial images as outputs
 # Can produce random noise vectors to use as an input
 class DatasetWithReconstruction(Dataset):
-    def __init__(self, base, *args, with_reconstruction = True, with_randoms = False, code_size = 80):
-        self.with_randoms = with_randoms
+    def __init__(self, base, *args, with_reconstruction = True, code_generator = None):
+        self.code_generator = code_generator
         self.with_reconstruction = with_reconstruction
         self.num_labels = len(base[0].labels[0])
-        self.code_size = code_size
         Dataset.__init__(self, base, *args)
         print('num_labels:', self.num_labels, 'labels left:', np.sum(base[0].labels))
+
+    def set_code_generator(self, code_generator):
+        self.code_generator = code_generator
 
     def get_batch(self, dataset, num, batch_size, shuffle = True, guaranteed_labels = 5):
         start, end = batch_size * num, batch_size * (num + 1)
@@ -31,6 +33,7 @@ class DatasetWithReconstruction(Dataset):
         X = dataset.images[ind[start:end]]
         y = dataset.labels[ind[start:end]]
 
+        batch_size = np.minimum(batch_size, len(y))
         if guaranteed_labels > 0:
             guaranteed_labels = np.minimum(guaranteed_labels, batch_size)
             total_labels_left = int(np.sum(dataset.labels))
@@ -52,11 +55,9 @@ class DatasetWithReconstruction(Dataset):
         if (self.with_reconstruction):
             y = (y, X)
 
-        if (self.with_randoms):
-            random_targets = np.eye(self.num_labels)[np.random.randint(0, self.num_labels, size = [batch_size])]
-            random_code = 2 * np.random.rand(batch_size, self.code_size) - 1 # shoud be like after tanh
-            randoms = np.concatenate((random_targets, random_code), axis = 1)
-            X = (X, randoms)
+        if (self.code_generator):
+            X = (X, self.code_generator.get_code(batch_size))
+
         return X, y
 
 def scale(x, feature_range=(-1, 1)):
@@ -120,8 +121,8 @@ class SvhnDataset():
         print('Test : inputs - ' + str(self.test.images.shape) + '\t outputs - ' + str(self.test.labels.shape))
 
 
-    def get_dataset_for_trainer(self, with_reconstruction = True, with_randoms = False):
-        return DatasetWithReconstruction((self.train, self.val, self.test), with_reconstruction = with_reconstruction, with_randoms = with_randoms)
+    def get_dataset_for_trainer(self, with_reconstruction = True):
+        return DatasetWithReconstruction((self.train, self.val, self.test), with_reconstruction = with_reconstruction)
 
 
 
