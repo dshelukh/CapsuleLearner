@@ -187,7 +187,7 @@ class Trainer():
                         new_loss, new_acc = self.run_on_dataset(sess, dataset.get_dataset('val'), batch_size)
                         if (sum(new_loss) < sum(self.cur_loss) - self.params.epsilon):
                             self.cur_loss = new_loss
-                            save_path = saver.save_session(sess, params = (self.step_num, self.cur_epoch), save_data = (self.cur_epoch - 1, self.cur_loss, self.step_num))
+                            save_path = saver.save_session(sess, params = (self.step_num, self.cur_epoch), save_data = (self.cur_epoch - 1, print_losses(self.cur_loss), self.step_num))
                             print('Model saved: ', save_path, 'Validation loss:', print_losses(new_loss), 'Validation accuracy:', new_acc * 100)
                             waiting_for = 0
                         else:
@@ -196,7 +196,7 @@ class Trainer():
 
                 test_loss, test_acc = self.run_on_dataset(sess, dataset.get_dataset('test'), batch_size)
                 print('Test accuracy after', self.cur_epoch, 'epoch: ', test_acc * 100, 'Test loss: ', print_losses(test_loss))
-                saver.save_session(sess, True, (self.cur_epoch), save_data = (self.cur_epoch, test_loss, self.step_num))
+                saver.save_session(sess, True, (self.cur_epoch), save_data = (self.cur_epoch, print_losses(test_loss), self.step_num))
                 if (waiting_for > self.params.threshold and self.params.early_stopping):
                     print('Loss didn\'t improve for %d checks' % self.params.threshold)
                     break
