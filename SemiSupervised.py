@@ -30,7 +30,7 @@ leave_num = args['l']
 
 need_resave = False
 dataset = SvhnDataset(0.3, leave_num).get_dataset_for_trainer()
-network_base = SemiSupCapsNet() #SemiSupervisedNetwork()
+network_base = SemiCapsNet() #SemiSupCapsNet() #SemiSupervisedNetwork()
 
 params = TrainerParams()
 params.batch_size = batch_size
@@ -75,7 +75,7 @@ with tf.Session() as sess:
     
     #images2 = np.rollaxis(testset['X'], 3)[:6]
     #images2 = sess.run(network_base.img, feed_dict={trainer.input_data: images, trainer.training: False})
-    images2 = sess.run(tf.tanh(network_base.generated), feed_dict={trainer.input_data: (images, randoms), trainer.training: False})
+    images2 = sess.run(tf.tanh(network_base.get_runner().reconstructed), feed_dict={trainer.input_data: (images, randoms), trainer.training: False})
     images = np.concatenate((images, images2), axis = 0)
     images = unscale(images)
     fig, axes = plt.subplots(2, 6, sharex=True, sharey=True, figsize=(12,3),)

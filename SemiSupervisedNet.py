@@ -5,7 +5,7 @@
 import tensorflow as tf
 
 from Trainer import *
-import code
+from Elements import *
 
 class ConvData():
     def __init__(self, num_features, kernel, stride, padding = 'same'):
@@ -14,9 +14,6 @@ class ConvData():
 
     def get_conv_data(self):
         return self.num_features, self.kernel, self.stride, self.padding
-
-def leaky_relu(x, alpha = 0.01):
-    return tf.maximum(x, alpha * x)
 
 class SemiSupervisedConfig():
     def __init__(self, num_outputs = 10, num_d_conv = 3, num_g_conv = 3, alpha = 0.01, start_features = 16, conv_kernel = 3, conv_stride = 2,
@@ -40,10 +37,6 @@ class SemiSupervisedConfig():
         self.first_decode_shape = first_decode_shape
         self.orig_channels = orig_channels # derive from input?
         self.mu = mu
-
-def tanh_cross_entropy(logits, labels):
-    abs_logits = tf.abs(logits)
-    return abs_logits + logits * labels + tf.log(1 + tf.exp(-2.0 * abs_logits))
 
 class SemiSupervisedNetwork():
     def __init__(self, config = SemiSupervisedConfig()):
@@ -156,6 +149,171 @@ class SemiSupervisedNetwork():
         return 'semi_loss', 'run_semi_supervised', 'num_classified_semi', 'get_minimizers_semi'
 
 
+
+
+
+
+
+
+class BasicRunner():
+    def __init__(self):
+        pass
+
+    def run(self, config, elements_dict, *args, **kwargs):
+        pass
+
+    # Common losses
+
+    def get_reconstruction_loss(self, images, reconstructed):
+        return tf.reduce_sum(tf.reduce_mean(tanh_cross_entropy(logits = reconstructed, labels = images), axis = [-1, -2, -3]))
+
+    # End common losses
+
+    def loss_function(self, config, *args, **kwargs):
+        pass
+
+    def num_classified(self, config, *args, **kwargs):
+        pass
+
+    def get_minimizers(self, optimizer, loss):
+        return [optimizer.minimize(l) for l in loss]
+
+# Class to use as a runner for GAN and SemiSupervised modes
+class GanRunner(BasicRunner):
+
+    def __init__(self, semi_supervised = True):
+        self.semi_supervised = semi_supervised
+
+    # TODO: use constants instead of names or do something with dictionary
+    def run(self, config, elements_dict, inputs, code, training):
+        # remember intended labels for code
+        code, self.code_labels = elements_dict['labeler'].run(config, code)
+
+        # generate images from code
+        self.generated = elements_dict['generator'].run(config, code, False, training)
+
+        # combine generated images with real ones and run classificator
+        images = tf.concat((inputs, tf.tanh(self.generated)), axis = 0)
+        sizes = [tf.shape(inputs)[0], tf.shape(self.generated)[0]]
+        self.codes = elements_dict['encoder'].run(config, images, False, training)
+        if self.semi_supervised:
+            self.pred_real, self.pred_fake = tf.split(elements_dict['predictor'].run(config, self.codes), sizes)
+        self.inputs_code, self.gen_code = tf.split(self.codes, sizes)
+
+        # extract features and add minibatch features (if needed)
+        features = elements_dict['extractor'].run(config, self.codes)
+        self.real_features, self.fake_features = tf.split(features, sizes)
+        if config.use_minibatch:
+            self.real_features = elements_dict['minibatcher'].run(config, self.real_features)
+            self.fake_features = elements_dict['minibatcher'].run(config, self.fake_features, reuse = True)
+        output_features = tf.concat((self.real_features, self.fake_features), 0)
+
+        output_features = tf.verify_tensor_all_finite(output_features, 'Not all values are finite within minibatch')
+
+        if config.with_reconstruction:
+            self.reconstructed = elements_dict['generator'].run(config, self.inputs_code, True, training)
+        # discriminate fake and original images
+        self.orig, self.fake = tf.split(elements_dict['fake_detector'].run(config, output_features), sizes)
+
+    # GAN losses
+    def get_feature_matching_loss(self, real, fake):
+        num_features = tf.cast(tf.shape(real)[1], tf.float32)
+        return l1norm(tf.reduce_mean(real, 0) - tf.reduce_mean(fake, 0))# / num_features
+
+    def get_loss_on_targets(self, loss_config, targets, outputs, targets_mask):
+        m_plus = loss_config.margin_m_plus
+        m_minus = loss_config.margin_m_minus
+
+        margin_loss = targets * tf.square(m_plus - outputs)
+        margin_loss += loss_config.margin_lambda * (1.0 - targets) * tf.square(outputs - m_minus)
+        loss = targets_mask * tf.reduce_sum(margin_loss, axis = 1)
+
+        return (tf.to_float(tf.shape(targets)[0]) * tf.reduce_sum(loss)) / (tf.reduce_sum(targets_mask) + 1e-6)
+
+    def get_fake_detection_loss(self, loss_config, labels, logits):
+        smooth = loss_config.label_smoothing
+        loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = smooth * labels, logits = logits)
+        return tf.reduce_sum(loss)
+
+    def loss_function(self, config, targets, images):
+        lconfig = config.loss_config
+
+        loss_on_targets = self.get_loss_on_targets(lconfig, targets, self.pred_real, tf.reduce_sum(targets, axis = -1))
+        loss_on_gen = self.get_loss_on_targets(lconfig, self.code_labels, self.pred_fake, tf.ones([tf.shape(self.code_labels)[0]], dtype = tf.float32))
+        reconstruction_loss = self.get_reconstruction_loss(images, self.reconstructed)
+        orig_detection_loss = self.get_fake_detection_loss(lconfig, labels = tf.ones_like(self.orig), logits = self.orig)
+        fake_detection_loss = self.get_fake_detection_loss(lconfig, labels = tf.zeros_like(self.fake), logits = self.fake)
+        camouflage_loss = self.get_fake_detection_loss(lconfig, labels = tf.ones_like(self.fake), logits = self.fake)
+        feature_matching_loss = self.get_feature_matching_loss(self.real_features, self.fake_features)
+
+        # basic GAN discriminator loss
+        d_loss = orig_detection_loss + fake_detection_loss
+        # basic GAN generator loss
+        g_loss = camouflage_loss if not lconfig.use_feature_matching else feature_matching_loss
+
+        if (self.semi_supervised):
+            d_loss += lconfig.gen_classify_coef_d * loss_on_gen + loss_on_targets
+            g_loss += lconfig.gen_classify_coef_g * loss_on_gen
+
+        if (config.with_reconstruction):
+            d_loss += lconfig.reconst_coef_d * reconstruction_loss
+            g_loss += lconfig.reconst_coef_g * reconstruction_loss
+
+        return d_loss, g_loss, loss_on_targets, orig_detection_loss, fake_detection_loss, loss_on_gen, reconstruction_loss
+
+    def num_classified(self, config, targets, images):
+        labels_mask = tf.reduce_sum(targets, axis = -1)
+        classified = tf.equal(tf.argmax(self.pred_real, axis = -1), tf.argmax(targets, axis = -1))
+        return tf.reduce_sum(tf.cast(classified, tf.float32) * labels_mask)
+
+    def get_minimizers(self, optimizer, loss):
+        all_vars = tf.trainable_variables()
+        d_vars = [v for v in all_vars if v.name.startswith('discriminator')]
+        g_vars = [v for v in all_vars if v.name.startswith('generator')]
+
+        with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
+            minimizer_d = optimizer.minimize(loss[0], var_list = d_vars)
+            minimizer_g = optimizer.minimize(loss[1], var_list = g_vars)
+        return [minimizer_d, minimizer_g]
+
+
+
+class BasicNet():
+    def __init__(self, modes_dict, mode, elements_dict = None, config = None):
+        self.modes = modes_dict
+        self.config = config
+        self.runner = None
+
+        self.mode = None
+        self.set_mode(mode)
+        self.run_elements = None
+        self.set_elements(elements_dict)
+
+    def set_mode(self, mode):
+        self.mode = mode
+        self.runner = self.modes[self.mode]
+
+    def set_elements(self, elements_dict):
+        self.run_elements = elements_dict
+
+    def run(self, *args, **kwargs):
+        return self.runner.run(self.config, self.run_elements, *args, **kwargs)
+
+    def loss_function(self, *args, **kwargs):
+        return self.runner.loss_function(self.config, *args, **kwargs)
+
+    def num_classified(self, *args, **kwargs):
+        return self.runner.num_classified(self.config, *args, **kwargs)
+
+    def get_minimizers(self, *args, **kwargs):
+        return self.runner.get_minimizers(*args, **kwargs)
+
+    def get_functions_for_trainer(self):
+        return 'loss_function', 'run', 'num_classified', 'get_minimizers'
+
+    def get_runner(self, mode = None):
+        return self.runner if mode is None else self.modes[mode]
+
 class SemiCapsCodeGenerator():
     def __init__(self, num_outputs, caps_len):
         self.num_outputs = num_outputs
@@ -180,11 +338,16 @@ class SemiCapsCodeGenerator():
 class SemiSupLossConfig():
     def __init__(self, label_smoothing = 0.9):
         self.label_smoothing = label_smoothing
-        self.margin_m_plus = 0.9
-        self.margin_m_minus = 0.1
+        self.margin_m_plus = label_smoothing
+        self.margin_m_minus = 0.0
         self.margin_lambda = 0.9
-        self.reconst_coef = 0.0004
-        self.gen_classify_coef = 0.1
+
+        self.reconst_coef_g = 0.6
+        self.reconst_coef_d = 0.2
+        self.gen_classify_coef_g = 0.3
+        self.gen_classify_coef_d = 0.1
+
+        self.use_feature_matching = False
 
 class SemiSupCapsConfig():
     def __init__(self, num_outputs = 10, caps1_len = 8, caps2_len = 16, capsg_len = 8, capsg_size = [8, 8, 32], loss_config = SemiSupLossConfig()):
@@ -210,7 +373,7 @@ class SemiSupCapsConfig():
         self.use_minibatch = True
         self.with_reconstruction = True
         self.loss_config = loss_config
-
+'''
 def batch_norm_with_ref(data, ref_size, training, name):
     x = data
     ref_size = 0 if ref_size is None else ref_size
@@ -360,19 +523,18 @@ class SemiSupCapsNet():
 
     def get_reconstruction_loss(self, images):
         condition = tf.constant(self.config.with_reconstruction)
-        calc_reconstruction_loss = lambda: tf.reduce_sum(tf.reduce_mean(tanh_cross_entropy(logits = self.reconstructed, labels = images), axis = -1))
+        calc_reconstruction_loss = lambda: tf.reduce_sum(tf.reduce_mean(tanh_cross_entropy(logits = self.reconstructed, labels = images), axis = [-1, -2, -3]))
         return tf.cond(condition, calc_reconstruction_loss, lambda: 0.0)
 
-    def get_loss_on_targets(self, targets, outputs):
+    def get_loss_on_targets(self, targets, outputs, targets_mask):
         loss_config = self.config.loss_config
-        smooth = loss_config.label_smoothing
-        targets_mask = tf.reduce_sum(targets, axis = -1)
+        m_plus = loss_config.margin_m_plus
+        m_minus = loss_config.margin_m_minus
 
-        margin_loss = targets * tf.square(smooth - outputs)
-        margin_loss += loss_config.margin_lambda * (1.0 - targets) * tf.square(outputs) #tf.maximum(0.0, output)) no smoothing on this side
+        margin_loss = targets * tf.square(m_plus - outputs)
+        margin_loss += loss_config.margin_lambda * (1.0 - targets) * tf.square(outputs - m_minus)
         loss = targets_mask * tf.reduce_sum(margin_loss, axis = 1)
-        # Documentation says labels should be a proper distribution, so not sure about using smoothing like this
-        # loss = targets_mask * tf.nn.softmax_cross_entropy_with_logits(labels = smooth * targets, logits = norm(self.inputs_code))
+
         return (tf.to_float(tf.shape(targets)[0]) * tf.reduce_sum(loss)) / (tf.reduce_sum(targets_mask) + 1e-6)
 
     def get_fake_detection_loss(self, labels, logits):
@@ -383,21 +545,21 @@ class SemiSupCapsNet():
     def loss_function(self, targets, images):
         lconfig = self.config.loss_config
 
-        loss_on_targets = self.get_loss_on_targets(targets, l1norm(self.inputs_code))
-        loss_on_gen = self.get_loss_on_targets(self.code_labels, l1norm(self.gen_code))
+        loss_on_targets = self.get_loss_on_targets(targets, l1norm(self.inputs_code), tf.reduce_sum(targets, axis = -1))
+        loss_on_gen = self.get_loss_on_targets(self.code_labels, l1norm(self.gen_code), tf.ones([tf.shape(self.code_labels)[0]], dtype = tf.float32))
         reconstruction_loss = self.get_reconstruction_loss(images)
         orig_detection_loss = self.get_fake_detection_loss(labels = tf.ones_like(self.orig), logits = self.orig)
         fake_detection_loss = self.get_fake_detection_loss(labels = tf.zeros_like(self.fake), logits = self.fake)
         camouflage_loss = self.get_fake_detection_loss(labels = tf.ones_like(self.fake), logits = self.fake)
         feature_matching_loss = self.get_feature_matching_loss()
 
-        d_loss = loss_on_targets + lconfig.reconst_coef * reconstruction_loss
+        d_loss = loss_on_targets + lconfig.reconst_coef_d * reconstruction_loss
         d_loss += orig_detection_loss + fake_detection_loss
-        d_loss += lconfig.gen_classify_coef * loss_on_gen
+        d_loss += lconfig.gen_classify_coef_d * loss_on_gen
 
         #g_loss = tf.reduce_sum(camouflage_loss)
-        g_loss = feature_matching_loss + lconfig.reconst_coef * reconstruction_loss
-        g_loss += lconfig.gen_classify_coef * loss_on_gen
+        g_loss = feature_matching_loss + lconfig.reconst_coef_g * reconstruction_loss
+        g_loss += lconfig.gen_classify_coef_g * loss_on_gen
         return d_loss, g_loss, loss_on_targets, orig_detection_loss, fake_detection_loss, loss_on_gen, reconstruction_loss
 
     def get_num_classified(self, targets, labels):
@@ -424,6 +586,32 @@ class SemiSupCapsNet():
 
     def get_code_generator(self):
         return self.code_gen
+'''
+class SemiCapsNet(BasicNet):
+    def __init__(self, config = SemiSupCapsConfig()):
+        self.ref_batch = None
+        self.code_gen = SemiCapsCodeGenerator(config.num_outputs, config.caps2_len)
 
+        runner = GanRunner()
+        modes_dict = {
+            'semi-supervised': GanRunner(),
+            'gan' : GanRunner(semi_supervised = False),
+            }
+        element_dict = {
+            'generator': CapsGenerator(),
+            'encoder': CapsEncoder(),
+            'predictor': CapsPredict(),
+            'minibatcher': Minibatcher(),
+            'labeler': CapsCodePrepare(),
+            'extractor': CapsFeatureExtractor(),
+            'fake_detector': DenseFakeDetector(),
+            }
+        super(SemiCapsNet, self).__init__(modes_dict, 'semi-supervised', element_dict, config = config)
+
+    def set_reference_batch(self, ref_batch):
+        self.run_elements['generator'].set_ref_batch(ref_batch)
+
+    def get_code_generator(self):
+        return self.code_gen
 
 

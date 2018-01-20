@@ -46,3 +46,13 @@ def maskForMaxCapsule(arr):
     num_outputs = arr.shape[-1]
     max_capsules = tf.argmax(arr, axis = -1)
     return tf.expand_dims(tf.one_hot(max_capsules, num_outputs), -1)
+
+
+
+
+def leaky_relu(x, alpha = 0.01):
+    return tf.maximum(x, alpha * x)
+
+def tanh_cross_entropy(logits, labels):
+    abs_logits = tf.abs(logits)
+    return abs_logits + logits * labels + tf.log(1 + tf.exp(-2.0 * abs_logits))
