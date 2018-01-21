@@ -40,13 +40,14 @@ params.early_stopping = False
 
 if (mode == 'ae' or mode == 'both'):
     tf.reset_default_graph()
-    network = Network(network_base, *network_base.get_ae_functions_for_trainer())
+    network_base.set_mode('ae')
+    network = Network(network_base, *network_base.get_functions_for_trainer())
     trainer = Trainer(network, dataset, params)
     saver = CustomSaver(folders=[save_folder + '/ae', save_folder + '/ae/epoch'])
     trainer.train(saver)
     need_resave = True
 
-network2 = Network(network_base, *network_base.get_functions_for_trainer()) #get_semi_functions_for_trainer())
+network2 = Network(network_base, *network_base.get_functions_for_trainer())
 if (mode == 'semi' or mode == 'both'):
     tf.reset_default_graph()
     dataset.set_code_generator(network_base.get_code_generator())
@@ -75,7 +76,7 @@ with tf.Session() as sess:
     
     #images2 = np.rollaxis(testset['X'], 3)[:6]
     #images2 = sess.run(network_base.img, feed_dict={trainer.input_data: images, trainer.training: False})
-    images2 = sess.run(tf.tanh(network_base.get_runner().reconstructed), feed_dict={trainer.input_data: (images, randoms), trainer.training: False})
+    images2 = sess.run(tf.tanh(network_base.get_runner().generated), feed_dict={trainer.input_data: (images, randoms), trainer.training: False})
     images = np.concatenate((images, images2), axis = 0)
     images = unscale(images)
     fig, axes = plt.subplots(2, 6, sharex=True, sharey=True, figsize=(12,3),)
