@@ -2,6 +2,7 @@
 @author: Dmitry
 '''
 import tensorflow as tf
+
 from CapsTools import *
 from CapsuleLayer import *
 
@@ -10,6 +11,11 @@ class RunElement():
         pass
 
 class EmptyElement(RunElement):
+    def run(self, data, *args, **kwargs):
+        return data
+
+#TODO: one empty element is enough
+class EmptyElementConfig(RunElement):
     def run(self, config, data, *args, **kwargs):
         return data
 
@@ -46,7 +52,7 @@ class VbnElement(RunElement):
         return x
 
 class BatchRenormElement(RunElement):
-    def run(self, data, training, name):
+    def run(self, data, training, name, **kwargs):
         return tf.layers.batch_normalization(data, training = training, name = name, renorm = True)
 
 # Convolution and deconvolution blocks with batch normalization, activation and dropout
@@ -72,6 +78,18 @@ class ConvBlockElement(RunElement):
 class DeconvBlockElement(ConvBlockElement):
     def get_processed_data(self, data, conv_config):
         return tf.layers.conv2d_transpose(data, *(conv_config.get_conv_data()), name = 'deconv')
+
+class UpsamplingBlockElement(ConvBlockElement):
+    def get_processed_data(self, data, conv_config):
+        # data is supposed to be in NHWC format
+        h, w = data.shape[1:3]
+        strides = conv_config.stride
+
+        if not isinstance(strides, tuple):
+            strides = (strides, strides)
+        
+        resized = tf.image.resize_images(data, [h * strides[0], w * strides[1]], method = tf.image.ResizeMethod.BILINEAR)
+        return tf.layers.conv2d(resized, conv_config.num_features, conv_config.kernel, padding = conv_config.padding, name = 'upsampl')
 
 # Base class for VB users
 class VbUserElement(RunElement):
@@ -100,7 +118,10 @@ class CapsGenerator(VbUserElement):
     def __init__(self, batch_norm = VbnElement()):
         super(CapsGenerator, self).__init__()
         self.batch_norm = batch_norm
-        self.deconv_block = DeconvBlockElement(activation = leaky_relu, batch_norm = self.batch_norm)
+        self.deconv_block_class = DeconvBlockElement
+
+    def set_deconv_block_class(self, block_class):
+        self.deconv_block_class = block_class
 
     def run(self, config, code, reuse = False, training = True):
         ref_size, code = self.get_virtual_batch_data(code)
@@ -113,32 +134,86 @@ class CapsGenerator(VbUserElement):
             caps_layer = CapsLayer(caps1, np.prod(config.capsg_size), config.capsg_len, name = 'caps_layer_g_1')
             caps2 = caps_layer.do_dynamic_routing()
             reshaped = tf.reshape(caps2, [-1, config.capsg_size[0], config.capsg_size[1], config.capsg_size[2] * config.capsg_len])
-            reshaped = tf.verify_tensor_all_finite(reshaped, 'Not all values are finite befire VBN1')
             reshaped = self.batch_norm.run(reshaped, training = training, name = 'ref_batch_norm1', ref_size = ref_size)
-            reshaped = tf.verify_tensor_all_finite(reshaped, 'Not all values are finite after VBN1')
 
-            deconv1_info = config.deconv1_info
-            gconv1 = self.deconv_block.run(reshaped, deconv1_info, training = training, name = 'deconv1', dropout = 0.0, ref_size = ref_size)
+            cur = reshaped
+            for i, conv_info in enumerate(config.deconv_g):
+                use_batch_norm = self.batch_norm if i < len(config.deconv_g) - 1 else EmptyElement() # no batch norm on last layer
+                deconv = self.deconv_block_class(activation = conv_info.activation, batch_norm = use_batch_norm)
+                cur = deconv.run(cur, conv_info, training = training, dropout = 0.0, name = 'deconv%d' % i, ref_size = ref_size)
 
-            deconv2_info = config.deconv2_info
-            gconv2 = tf.layers.conv2d_transpose(gconv1, *(deconv2_info.get_conv_data()))
-            return self.return_from_virtual_batch(gconv2, ref_size)
+            return self.return_from_virtual_batch(cur, ref_size)
+
+class LSTMGenerator(VbUserElement):
+    #(code from Udacity course)
+    def run(self, config, lstm_output, training = True):
+        # Reshape output so it's a bunch of rows, one row for each step for each sequence.
+        # Concatenate lstm_output over axis 1 (the columns)
+        print(lstm_output.shape)
+        seq_output = tf.concat(lstm_output, axis = 1)
+        print(seq_output.shape)
+        # Reshape seq_output to a 2D tensor with lstm_size columns
+        x = tf.reshape(seq_output, [-1, config.lstm_size])
+        print(x.shape)
+        # Connect the RNN outputs to a softmax layer
+        with tf.variable_scope('softmax'):
+            # Create the weight and bias variables here
+            softmax_w = tf.Variable(tf.truncated_normal((config.lstm_size, config.out_size), stddev=0.1))
+            softmax_b = tf.Variable(tf.zeros(config.out_size))
+
+        # Since output is a bunch of rows of RNN cell outputs, logits will be a bunch
+        # of rows of logit outputs, one for each step and sequence
+        logits = tf.matmul(x, softmax_w) + softmax_b
+
+        # Back to shape with batch size
+        logits = tf.reshape(logits, [-1, tf.shape(lstm_output)[1], config.out_size])
+        print(logits.shape)
+        return logits
 
 # Convert images to code
 class CapsEncoder(RunElement):
     def run(self, config, inputs, reuse = False, training = True):
 
         with(tf.variable_scope('discriminator', reuse=reuse)):
-            conv1_info = config.conv1_info
-            conv1 = ConvBlockElement(activation = leaky_relu).run(inputs, conv1_info, training = training, name = 'conv1')
+            cur = inputs
+            for i, conv_info in enumerate(config.conv_d):
+                cur = ConvBlockElement(activation = conv_info.activation).run(cur, conv_info, training = training, name = 'conv%d' % i)
 
-            conv2_info = config.conv2_info
-            conv2 = ConvBlockElement(activation = None).run(conv1, conv2_info, training = training, name = 'conv2')
-
-            caps1 = squash(reshapeToCapsules(tf.transpose(conv2, [0, 3, 1, 2]), config.caps1_len, axis = 1))
+            caps1 = squash(reshapeToCapsules(tf.transpose(cur, [0, 3, 1, 2]), config.caps1_len, axis = 1))
             caps_layer = CapsLayer(caps1, config.num_outputs, config.caps2_len)
             caps2 = caps_layer.do_dynamic_routing()
             return caps2
+
+class LSTMEncoder(RunElement):
+    ### Build the LSTM Cell (code from Udacity course)
+    def build_cell(self, lstm_size, keep_prob):
+        # Use a basic LSTM cell
+        lstm = tf.contrib.rnn.BasicLSTMCell(lstm_size)
+    
+        # Add dropout to the cell outputs
+        lstm = tf.contrib.rnn.DropoutWrapper(lstm, output_keep_prob=keep_prob)
+        return lstm
+
+    def build_lstm(self, lstm_size, num_layers, batch_size, keep_prob):
+
+        # Stack up multiple LSTM layers, for deep learning
+        cell = tf.contrib.rnn.MultiRNNCell([self.build_cell(lstm_size, keep_prob) for i in range(num_layers)])
+        initial_state = cell.zero_state(batch_size, tf.float32)
+
+        return cell, initial_state
+
+    def run(self, config, inputs, training = True):
+        # Build the LSTM cell
+        keep_prob = tf.cond(training, lambda: 1.0 - config.dropout, lambda: 1.0)
+        cell, self.initial_state = self.build_lstm(config.lstm_size, config.num_layers, tf.shape(inputs)[0], keep_prob)
+
+        ### Run the data through the RNN layers
+
+        # Run each sequence step through the RNN with tf.nn.dynamic_rnn 
+        outputs, state = tf.nn.dynamic_rnn(cell, inputs, initial_state=self.initial_state)
+        self.final_state = state
+        return outputs
+
 
 # Element to add minibatch data
 class Minibatcher(RunElement):
@@ -158,8 +233,7 @@ class Minibatcher(RunElement):
 # Convert encoded data to features
 class CapsFeatureExtractor(RunElement):
     def run(self, config, codes):
-        masked = tf.multiply(codes, maskForMaxCapsule(l1norm(codes)))
-        return tf.contrib.layers.flatten(masked)
+        return tf.multiply(codes, maskForMaxCapsule(l1norm(codes)))
 
 class RemoveLabelsFeatureExtractor(RunElement):
     def run(self, config, codes):

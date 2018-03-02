@@ -1,7 +1,7 @@
 '''
 @author: Dmitry
 '''
-from Trainer import *
+from DatasetBase import *
 
 import pickle as pkl
 import time
@@ -60,32 +60,15 @@ class DatasetWithReconstruction(Dataset):
 
         return X, y
 
-def scale(x, feature_range=(-1, 1)):
-    min, max = feature_range
-    x = (x - x.min()) * ((max - min) / (255 - x.min())) + min # Keep the braces!
-    return x
-
-def unscale(x, feature_range = (-1.0, 1.0)):
-    min, max = feature_range
-    return ((x - min) * 255 / (max - min)).astype(np.uint8)
-
-class SvhnDataset():
+class SvhnDataset(DownloadableDataset):
     # leave_labels = -1 means use all labels
     def __init__(self, val_split = 0.3, leave_labels = -1, feature_range = (-1, 1), data_dir = 'data/'):
         self.num_labels = 10
         self.val_split = val_split
         self.leave_labels = leave_labels
         self.feature_range = feature_range
-        self.data_dir = data_dir
-
+        DownloadableDataset.__init__(self, 'http://ufldl.stanford.edu/housenumbers/', ['train_32x32.mat', 'test_32x32.mat'], data_dir)
         self.loadDataset()
-
-    def download_if_needed(self, name):
-        datafile = self.data_dir + name
-        if not os.path.isfile(datafile):
-            print('Downloading:', name)
-            urllib.request.urlretrieve('http://ufldl.stanford.edu/housenumbers/' + name, datafile)
-            print('Download complete!')
 
     def preprocess(self, images):
         images = np.rollaxis(images, 3)
@@ -96,8 +79,6 @@ class SvhnDataset():
         return one_hotter[np.reshape(data['y'] - 1, [-1])]
 
     def loadDataset(self):
-        self.download_if_needed('train_32x32.mat')
-        self.download_if_needed('test_32x32.mat')
 
         trainset = loadmat(self.data_dir + 'train_32x32.mat')
         testset = loadmat(self.data_dir + 'test_32x32.mat')

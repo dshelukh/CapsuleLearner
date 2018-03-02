@@ -28,7 +28,7 @@ save_folder = args['save']
 batch_size = args['b']
 leave_num = args['l']
 
-need_resave = False
+need_resave = True
 dataset = SvhnDataset(0.3, leave_num).get_dataset_for_trainer()
 network_base = SemiCapsNet() #SemiSupCapsNet() #SemiSupervisedNetwork()
 
@@ -36,7 +36,7 @@ params = TrainerParams()
 params.batch_size = batch_size
 params.val_check_period = 50
 params.optimizer = tf.train.AdamOptimizer(0.001)
-params.early_stopping = False
+
 
 if (mode == 'ae' or mode == 'both'):
     tf.reset_default_graph()
@@ -45,10 +45,11 @@ if (mode == 'ae' or mode == 'both'):
     trainer = Trainer(network, dataset, params)
     saver = CustomSaver(folders=[save_folder + '/ae', save_folder + '/ae/epoch'])
     trainer.train(saver)
-    need_resave = True
+    need_resave = False
 
 network2 = Network(network_base, *network_base.get_functions_for_trainer())
 if (mode == 'semi' or mode == 'both'):
+    params.early_stopping = False
     tf.reset_default_graph()
     dataset.set_code_generator(network_base.get_code_generator())
     (images, randoms), _ = dataset.get_batch(dataset.val, 0, batch_size, False)

@@ -1,0 +1,115 @@
+'''
+@author: Dmitry
+'''
+
+import wave
+import sys
+sys.path.insert(0, '../')
+
+from os import listdir
+from os.path import isfile, join
+
+from Trainer import *
+import numpy as np
+
+MAX_ABS_SHORT = 32768
+
+class EchoCancellationDataset(Dataset):
+    def __init__(self, base, *args):
+        Dataset.__init__(self, base, *args)
+        self.nchannels = 1
+        self.sampwidth = 2
+        self.framerate = 16000
+
+        self.sample_len = 3 * self.framerate # 3 seconds
+        self.echo_delay_min = 0.15
+        self.echo_delay_max = 0.7
+        self.echo_level_min = 0.1
+        self.echo_level_max = 0.65
+
+    def add_echo(self, orig):
+        echo_time = np.random.uniform(self.echo_delay_min, self.echo_delay_max)
+        echo_level = np.random.uniform(self.echo_level_min, self.echo_level_max)
+        echo_start = int(echo_time * self.framerate)
+        echo = echo_level * np.pad(orig, (echo_start, 0), mode = 'constant')[:-echo_start]
+        echoed = orig + echo
+        return echoed, time, level
+
+    def get_batch(self, dataset, num, batch_size, shuffle = True):
+        # TODO implement shuffled get_batch in base class
+        start, end = batch_size * num, batch_size * (num + 1)
+        ind = np.arange(len(dataset.images))
+        if (shuffle):
+            np.random.shuffle(ind)
+
+        files = np.array(dataset.images)[ind[start:end]]
+
+        # every file should have sample_len number of samples. Samples should be converted to floats in range (-1; 1)
+        # echo should be added to input
+        X = []
+        y = []
+
+        for filename in files:
+            with wave.open(filename, 'rb') as wave_file:
+                nframes = wave_file.getnframes()
+                orig = np.frombuffer(wave_file.readframes(nframes), dtype = np.short)
+                if nframes < self.sample_len:
+                    sized = np.pad(orig, (self.sample_len - nframes, 0), mode = 'constant')
+                else:
+                    startfrom = np.random.randint(nframes - self.sample_len + 1)
+                    sized = orig[startfrom:startfrom + self.sample_len]
+                result = sized.astype(np.float32) / (2 * MAX_ABS_SHORT) + 0.5
+                echoed, time, level = self.add_echo(result)
+                X.append(echoed)
+                y.append(result)
+        # make 3D numpy arrays
+        X = np.expand_dims(X, axis=-1)
+        y = np.expand_dims(y, axis=-1)
+        return X, y
+
+class EchoDataset(DownloadableDataset):
+    def __init__(self, train_split = 0.75, val_split = 0.1, data_dir = 'data/'):
+        DownloadableDataset.__init__(self, 'http://festvox.org/cmu_arctic/cmu_arctic/packed/', ['cmu_us_bdl_arctic-0.95-release.zip'], data_dir, True)
+        self.train_split = train_split
+        self.val_split = val_split
+        self.loadDataset()
+
+    def loadDataset(self):
+        audio_path = self.data_dir + 'cmu_us_bdl_arctic/wav'
+        audiofiles = [join(audio_path, f) for f in listdir(audio_path) if isfile(join(audio_path, f))]
+
+        num_files = len(audiofiles)
+        train_index = int(self.train_split * num_files)
+        val_index = train_index + int(self.val_split * num_files)
+
+        train_files = audiofiles[:train_index]
+        val_files = audiofiles[train_index:val_index]
+        test_files = audiofiles[val_index:]
+
+        # all preprocessing should be in runtime
+        self.train = DatasetBase(train_files, train_files)
+        self.val = DatasetBase(val_files, val_files)
+        self.test = DatasetBase(test_files, test_files)
+
+        print('Train: inputs - ', len(train_files))
+        print('Val  : inputs - ', len(val_files))
+        print('Test : inputs - ', len(test_files))
+
+    def get_dataset_for_trainer(self):
+        return EchoCancellationDataset((self.train, self.val, self.test))
+
+def save_wav(sound, name):
+    with wave.open(name, 'wb') as wave_out:
+        wave_out.setparams((1, 2, 16000, 1, 'NONE', 'not compressed'))
+        wave_out.writeframes(((np.squeeze(sound) - 0.5) * 2 * MAX_ABS_SHORT).astype(np.short))
+
+if __name__ == "__main__":
+    dataset = EchoDataset().get_dataset_for_trainer()
+    X, y = dataset.get_batch(dataset.val, 0, 1, False)
+    print(X[0].shape, y.shape)
+    
+    save_wav(X[0], './echoed.wav')
+    save_wav(y[0], './original.wav')
+
+
+

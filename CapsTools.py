@@ -56,3 +56,12 @@ def leaky_relu(x, alpha = 0.01):
 def tanh_cross_entropy(logits, labels):
     abs_logits = tf.abs(logits)
     return abs_logits + logits * labels + tf.log(1 + tf.exp(-2.0 * abs_logits))
+
+def scale(x, feature_range=(-1, 1)):
+    min, max = feature_range
+    x = (x - x.min()) * ((max - min) / (255 - x.min())) + min # Keep the braces!
+    return x
+
+def unscale(x, feature_range = (-1.0, 1.0)):
+    min, max = feature_range
+    return ((x - min) * 255 / (max - min)).astype(np.uint8)

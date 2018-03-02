@@ -7,47 +7,8 @@ import matplotlib.pyplot as plt
 
 from SimpleCapsNet import *
 from CustomSaver import *
+from DatasetBase import *
 from tensorflow.examples.tutorials.mnist import input_data
-
-class DatasetBase():
-    def __init__(self, images, labels):
-        self.images = images
-        self.labels = labels
-
-class SizeInfo():
-    def __init__(self, shape):
-        self.shape = list(shape)
-
-def sizes_from_tuple(t):
-    l = list(t) if isinstance(t, tuple) else [t]
-    sizes = []
-
-    for i in l:
-        sizes.append(SizeInfo(i.shape[1:]))
-    return sizes
-
-class Dataset():
-    def __init__(self, base):
-        self.train, self.val, self.test = base
-
-    def get_shapes(self):
-        X, y = self.get_batch(self.train, 0, 1)
-        self.inputs_info = sizes_from_tuple(X)
-        self.outputs_info = sizes_from_tuple(y)
-        print ('Inputs:', [info.shape for info in self.inputs_info], 'outputs:', [info.shape for info in self.outputs_info])
-        return self.inputs_info, self.outputs_info
-
-    def get_dataset(self, dataset_name):
-        return getattr(self, dataset_name)
-
-    def get_num_batches(self, dataset, batch_size):
-        num = len(dataset.images) // batch_size
-        return num if len(dataset.images) % batch_size == 0 else num + 1
-
-    def get_batch(self, dataset, num, batch_size):
-        start, end = batch_size * num, batch_size * (num + 1)
-        return dataset.images[start:end], dataset.labels[start:end]
-
 
 
 class TrainerParams():

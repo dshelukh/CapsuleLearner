@@ -14,14 +14,17 @@ class BasicRunner():
 
     # Common losses
 
-    def get_reconstruction_loss(self, images, reconstructed):
-        return tf.reduce_sum(tf.reduce_mean(tanh_cross_entropy(logits = reconstructed, labels = images), axis = [-1, -2, -3]))
+    def get_reconstruction_loss(self, images, reconstructed, cross_entropy = tanh_cross_entropy):
+        axis = list(range(1, len(list(images.shape))))
+        return tf.reduce_sum(tf.reduce_mean(cross_entropy(logits = reconstructed, labels = images), axis = axis))
 
     def get_softmax_loss(self, targets, predictions, labels_mask = None):
-        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels = targets, logits = predictions), axis = -1)
+        loss = tf.reduce_sum(tf.nn.softmax_cross_entropy_with_logits(labels = targets, logits = predictions), axis = -1)
+        num = tf.shape(targets)[0]
         if labels_mask is not None:
             loss = labels_mask * loss
-        return tf.reduce_sum(loss)
+            num = tf.reduce_sum(labels_mask)
+        return tf.reduce_sum(loss) / num
 
     # End common losses
 
@@ -58,6 +61,7 @@ class GanRunner(BasicRunner):
 
         # extract features and add minibatch features (if needed)
         features = elements_dict['extractor'].run(config, self.codes)
+        features = tf.contrib.layers.flatten(features)
         self.real_features, self.fake_features = tf.split(features, sizes)
         if config.use_minibatch:
             self.real_features = elements_dict['minibatcher'].run(config, self.real_features)
@@ -143,26 +147,31 @@ class GanRunner(BasicRunner):
 
 class AERunner(BasicRunner):
 
-    def __init__(self, with_predictions = False):
+    def __init__(self, with_predictions = False, activation_to_use = (tf.tanh, tanh_cross_entropy)):
         self.with_predictions = with_predictions
+        self.final_activation, self.cross_entropy = activation_to_use
 
     def run(self, config, elements_dict, inputs, training):
-        self.code = elements_dict['encoder'].run(config, inputs, training = training)
+        code = elements_dict['encoder'].run(config, inputs, training = training)
+        self.code = elements_dict['extractor'].run(config, code)
         if self.with_predictions:
-            self.predictions = elements_dict['predictor'].run(config, self.codes)
+            self.predictions = elements_dict['predictor'].run(config, self.code)
  
         self.reconstructed = elements_dict['generator'].run(config, self.code, training = training)
-        self.img = tf.tanh(self.reconstructed)
+        self.img = self.final_activation(self.reconstructed)
 
-    def loss_function(self, config, targets, images):
-        ae_loss = self.get_reconstruction_loss(images, self.reconstructed)
+    def loss_function(self, config, targets, images = None):
+        if images == None and not self.with_predictions:
+            images = targets
+        ae_loss = self.get_reconstruction_loss(images, self.reconstructed, cross_entropy = self.cross_entropy)
         if (self.with_predictions):
             labels_mask = tf.reduce_sum(targets, axis = -1)
             classification_loss = self.get_softmax_loss(targets, self.predictions, labels_mask)
             ae_loss += config.loss_config.prediction_coef * classification_loss
+            ae_loss = (ae_loss, classification_loss)
         return ae_loss
 
-    def num_classified(self, config, targets, images):
+    def num_classified(self, config, targets, images = None):
         if (self.with_predictions):
             labels_mask = tf.reduce_sum(targets, axis = -1)
             classified = tf.equal(tf.argmax(self.predictions, axis = -1), tf.argmax(targets, axis = -1))
@@ -170,5 +179,8 @@ class AERunner(BasicRunner):
         else:
             return tf.constant(0)
 
+    def get_minimizers(self, optimizer, loss):
+        minimizer = optimizer.minimize(loss[0])
+        return [minimizer]
 
 
