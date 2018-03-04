@@ -7,16 +7,23 @@ from SemiSupervisedNet import *
 
 class EchoCancellationConfig():
     def __init__(self):
-        self.lstm_size = 32
-        self.num_layers = 2
+        self.convs = [
+                ConvData(16, (7, 1), 1, activation = tf.tanh),
+                ConvData(16, (7, 1), 1, activation = tf.tanh)
+            ]
+        self.lstm1_size = 32
+        self.lstm1_layers = 1
+        self.dense_size = 16
+        self.lstm2_size = 32
+        self.lstm2_layers = 1
         self.dropout = 0.2
 
-        self.out_size = 1
+        self.out_size = 2
 
 class EchoCancellationNet(BasicNet):
     def __init__(self, config = EchoCancellationConfig()):
         modes_dict = {
-            'ae' : AERunner(with_predictions = False, activation_to_use = (tf.sigmoid, tf.nn.sigmoid_cross_entropy_with_logits))
+            'ae' : AERunner(with_predictions = False) #, activation_to_use = (tf.sigmoid, tf.nn.sigmoid_cross_entropy_with_logits))
             }
         generator = LSTMGenerator()
         encoder = LSTMEncoder()
@@ -47,7 +54,8 @@ save_folder = args['save']
 batch_size = args['b']
 leave_num = args['l']
 
-dataset = EchoDataset().get_dataset_for_trainer()
+config = EchoCancellationConfig()
+dataset = EchoDataset().get_dataset_for_trainer(step_size = config.out_size)
 network_base = EchoCancellationNet()
 network_base.set_mode('ae')
 network = Network(network_base, *network_base.get_functions_for_trainer())
@@ -67,13 +75,21 @@ if (mode == 'ae' or mode == 'both'):
 tf.reset_default_graph()
 trainer = Trainer(network, dataset, params)
 saver = CustomSaver(folders=[save_folder + '/ae', save_folder + '/ae/epoch'])
+echo_levels = [0.2, 0.4, 0.65]
+echo_delays = [0.2, 0.5, 0.7]
 with tf.Session() as sess:
-    saver.restore_session(sess, False)
+    saver.restore_session(sess, True)
     echoed, original = dataset.get_batch(dataset.test, 0, 1, False)
-    result = sess.run(network_base.get_runner().img, feed_dict={trainer.input_data: (echoed), trainer.training: False})
-    save_wav(echoed, './echoed.wav')
-    save_wav(original, './original.wav')
-    save_wav(result, './result.wav')
+    save_wav(np.copy(original), save_folder + '/original.wav')
+    original = np.reshape(original, [-1])
+    input_shape = echoed.shape
+    for i, level in enumerate(echo_levels):
+        for j, delay in enumerate(echo_delays):
+            echoed, _ = add_echo(np.copy(original), delay, level)
+            result = sess.run(network_base.get_runner().img, feed_dict={trainer.input_data: (np.reshape(echoed, input_shape)), trainer.training: False})
+            save_wav(echoed, save_folder + '/echoed_l%d_d%d.wav' % (i, j))
+            save_wav(result, save_folder + '/result_l%d_d%d.wav' % (i, j))
+
     print('Done!')
 
 

@@ -14,13 +14,31 @@ import numpy as np
 
 MAX_ABS_SHORT = 32768
 
+def remove_echo(data, delay, level, framerate = 16000):
+    echo_delay = int(framerate * delay)
+    result = []
+    for i in range(len(data)):
+        if (i < echo_delay):
+            result.append(data[i])
+        else:
+            echo = level * result[i - echo_delay]
+            result.append(data[i] - echo)
+    return np.array(result)
+
+def add_echo(orig, echo_delay, echo_level, framerate = 16000):
+    echo_start = int(echo_delay * framerate)
+    echo = echo_level * np.pad(orig, (echo_start, 0), mode = 'constant')[:-echo_start]
+    echoed = orig + echo
+    return echoed, echo
+
 class EchoCancellationDataset(Dataset):
-    def __init__(self, base, *args):
+    def __init__(self, base, *args, step_size = 1):
         Dataset.__init__(self, base, *args)
         self.nchannels = 1
         self.sampwidth = 2
         self.framerate = 16000
 
+        self.step_size = step_size
         self.sample_len = 3 * self.framerate # 3 seconds
         self.echo_delay_min = 0.15
         self.echo_delay_max = 0.7
@@ -30,10 +48,9 @@ class EchoCancellationDataset(Dataset):
     def add_echo(self, orig):
         echo_time = np.random.uniform(self.echo_delay_min, self.echo_delay_max)
         echo_level = np.random.uniform(self.echo_level_min, self.echo_level_max)
-        echo_start = int(echo_time * self.framerate)
-        echo = echo_level * np.pad(orig, (echo_start, 0), mode = 'constant')[:-echo_start]
-        echoed = orig + echo
-        return echoed, time, level
+
+        echoed, echo = add_echo(orig, echo_time, echo_level, self.framerate)
+        return echoed, echo_time, echo_level, echo
 
     def get_batch(self, dataset, num, batch_size, shuffle = True):
         # TODO implement shuffled get_batch in base class
@@ -58,13 +75,14 @@ class EchoCancellationDataset(Dataset):
                 else:
                     startfrom = np.random.randint(nframes - self.sample_len + 1)
                     sized = orig[startfrom:startfrom + self.sample_len]
-                result = sized.astype(np.float32) / (2 * MAX_ABS_SHORT) + 0.5
-                echoed, time, level = self.add_echo(result)
+                result = sized.astype(np.float32) / MAX_ABS_SHORT
+                echoed, time, level, echo = self.add_echo(result)
+                #print(time, level)
                 X.append(echoed)
-                y.append(result)
+                y.append(result) #[time, level])
         # make 3D numpy arrays
-        X = np.expand_dims(X, axis=-1)
-        y = np.expand_dims(y, axis=-1)
+        X = np.reshape(X, [-1, self.sample_len // self.step_size, self.step_size])
+        y = np.reshape(y, [-1, self.sample_len // self.step_size, self.step_size])
         return X, y
 
 class EchoDataset(DownloadableDataset):
@@ -95,13 +113,14 @@ class EchoDataset(DownloadableDataset):
         print('Val  : inputs - ', len(val_files))
         print('Test : inputs - ', len(test_files))
 
-    def get_dataset_for_trainer(self):
-        return EchoCancellationDataset((self.train, self.val, self.test))
+    def get_dataset_for_trainer(self, step_size = 1):
+        return EchoCancellationDataset((self.train, self.val, self.test), step_size = step_size)
 
 def save_wav(sound, name):
     with wave.open(name, 'wb') as wave_out:
         wave_out.setparams((1, 2, 16000, 1, 'NONE', 'not compressed'))
-        wave_out.writeframes(((np.squeeze(sound) - 0.5) * 2 * MAX_ABS_SHORT).astype(np.short))
+        sound = np.reshape(sound, [-1, *sound.shape[1:]])
+        wave_out.writeframes((np.squeeze(sound) * MAX_ABS_SHORT).astype(np.short))
 
 if __name__ == "__main__":
     dataset = EchoDataset().get_dataset_for_trainer()

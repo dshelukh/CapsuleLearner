@@ -14,9 +14,9 @@ class BasicRunner():
 
     # Common losses
 
-    def get_reconstruction_loss(self, images, reconstructed, cross_entropy = tanh_cross_entropy):
+    def get_reconstruction_loss(self, images, reconstructed):
         axis = list(range(1, len(list(images.shape))))
-        return tf.reduce_sum(tf.reduce_mean(cross_entropy(logits = reconstructed, labels = images), axis = axis))
+        return tf.reduce_sum(tf.reduce_mean(tf.square(images - reconstructed), axis = axis))
 
     def get_softmax_loss(self, targets, predictions, labels_mask = None):
         loss = tf.reduce_sum(tf.nn.softmax_cross_entropy_with_logits(labels = targets, logits = predictions), axis = -1)
@@ -163,7 +163,7 @@ class AERunner(BasicRunner):
     def loss_function(self, config, targets, images = None):
         if images == None and not self.with_predictions:
             images = targets
-        ae_loss = self.get_reconstruction_loss(images, self.reconstructed, cross_entropy = self.cross_entropy)
+        ae_loss = self.get_reconstruction_loss(images, self.img)
         if (self.with_predictions):
             labels_mask = tf.reduce_sum(targets, axis = -1)
             classification_loss = self.get_softmax_loss(targets, self.predictions, labels_mask)

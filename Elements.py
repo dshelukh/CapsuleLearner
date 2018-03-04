@@ -148,26 +148,15 @@ class LSTMGenerator(VbUserElement):
     #(code from Udacity course)
     def run(self, config, lstm_output, training = True):
         # Reshape output so it's a bunch of rows, one row for each step for each sequence.
-        # Concatenate lstm_output over axis 1 (the columns)
-        print(lstm_output.shape)
-        seq_output = tf.concat(lstm_output, axis = 1)
-        print(seq_output.shape)
-        # Reshape seq_output to a 2D tensor with lstm_size columns
-        x = tf.reshape(seq_output, [-1, config.lstm_size])
-        print(x.shape)
-        # Connect the RNN outputs to a softmax layer
-        with tf.variable_scope('softmax'):
-            # Create the weight and bias variables here
-            softmax_w = tf.Variable(tf.truncated_normal((config.lstm_size, config.out_size), stddev=0.1))
-            softmax_b = tf.Variable(tf.zeros(config.out_size))
+        x = tf.reshape(lstm_output, [-1, config.lstm2_size])
 
         # Since output is a bunch of rows of RNN cell outputs, logits will be a bunch
         # of rows of logit outputs, one for each step and sequence
-        logits = tf.matmul(x, softmax_w) + softmax_b
+        logits = tf.layers.dense(x, config.out_size)
 
         # Back to shape with batch size
         logits = tf.reshape(logits, [-1, tf.shape(lstm_output)[1], config.out_size])
-        print(logits.shape)
+
         return logits
 
 # Convert images to code
@@ -205,14 +194,23 @@ class LSTMEncoder(RunElement):
     def run(self, config, inputs, training = True):
         # Build the LSTM cell
         keep_prob = tf.cond(training, lambda: 1.0 - config.dropout, lambda: 1.0)
-        cell, self.initial_state = self.build_lstm(config.lstm_size, config.num_layers, tf.shape(inputs)[0], keep_prob)
 
+        cell1, self.initial_state1 = self.build_lstm(config.lstm1_size, config.lstm1_layers, tf.shape(inputs)[0], keep_prob)
+        cell2, self.initial_state2 = self.build_lstm(config.lstm2_size, config.lstm2_layers, tf.shape(inputs)[0], keep_prob)
         ### Run the data through the RNN layers
 
+        cur = tf.expand_dims(inputs, axis = -1)
+        for conv in config.convs:
+            cur = tf.layers.conv2d(cur, *conv.get_conv_data(), activation = conv.activation)
+        cur = tf.reshape(inputs, [-1, cur.shape[1], cur.shape[1] * cur.shape[2]])
+
         # Run each sequence step through the RNN with tf.nn.dynamic_rnn 
-        outputs, state = tf.nn.dynamic_rnn(cell, inputs, initial_state=self.initial_state)
+        outputs, state = tf.nn.dynamic_rnn(cell1, inputs, initial_state=self.initial_state1, scope='lstm1')
+        added_features = tf.concat((tf.layers.dense(outputs, config.dense_size, activation = tf.tanh), outputs), axis = 2)
+
+        outputs2, state = tf.nn.dynamic_rnn(cell2, added_features, initial_state=self.initial_state2, scope='lstm2')
         self.final_state = state
-        return outputs
+        return outputs2
 
 
 # Element to add minibatch data
