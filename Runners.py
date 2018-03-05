@@ -16,7 +16,7 @@ class BasicRunner():
 
     def get_reconstruction_loss(self, images, reconstructed):
         axis = list(range(1, len(list(images.shape))))
-        return tf.reduce_sum(tf.reduce_mean(tf.square(images - reconstructed), axis = axis))
+        return tf.reduce_sum(tf.reduce_mean(tf.abs(images - reconstructed), axis = axis))
 
     def get_softmax_loss(self, targets, predictions, labels_mask = None):
         loss = tf.reduce_sum(tf.nn.softmax_cross_entropy_with_logits(labels = targets, logits = predictions), axis = -1)

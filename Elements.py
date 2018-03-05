@@ -148,11 +148,11 @@ class LSTMGenerator(VbUserElement):
     #(code from Udacity course)
     def run(self, config, lstm_output, training = True):
         # Reshape output so it's a bunch of rows, one row for each step for each sequence.
-        x = tf.reshape(lstm_output, [-1, config.lstm2_size])
+        x = tf.reshape(lstm_output, [-1, lstm_output.shape[2]])
 
         # Since output is a bunch of rows of RNN cell outputs, logits will be a bunch
         # of rows of logit outputs, one for each step and sequence
-        logits = tf.layers.dense(x, config.out_size)
+        logits = tf.layers.dense(x, config.out_size) #config.out_size)
 
         # Back to shape with batch size
         logits = tf.reshape(logits, [-1, tf.shape(lstm_output)[1], config.out_size])
@@ -202,15 +202,21 @@ class LSTMEncoder(RunElement):
         cur = tf.expand_dims(inputs, axis = -1)
         for conv in config.convs:
             cur = tf.layers.conv2d(cur, *conv.get_conv_data(), activation = conv.activation)
-        cur = tf.reshape(inputs, [-1, cur.shape[1], cur.shape[1] * cur.shape[2]])
+        cur = tf.reshape(cur, [-1, cur.shape[1], cur.shape[2] * cur.shape[3]])
 
         # Run each sequence step through the RNN with tf.nn.dynamic_rnn 
-        outputs, state = tf.nn.dynamic_rnn(cell1, inputs, initial_state=self.initial_state1, scope='lstm1')
+        outputs, state = tf.nn.dynamic_rnn(cell1, cur, initial_state=self.initial_state1, scope='lstm1')
         added_features = tf.concat((tf.layers.dense(outputs, config.dense_size, activation = tf.tanh), outputs), axis = 2)
 
         outputs2, state = tf.nn.dynamic_rnn(cell2, added_features, initial_state=self.initial_state2, scope='lstm2')
         self.final_state = state
-        return outputs2
+
+        cur = tf.expand_dims(outputs2, axis = -2)
+        for i, conv_info in enumerate(config.convs):
+            deconv = UpsamplingBlockElement(activation = conv_info.activation, batch_norm = EmptyElement())
+            cur = deconv.run(cur, conv_info, training = training, dropout = 0.0, name = 'deconv%d' % i)
+        cur = tf.reshape(cur, [-1, cur.shape[1], cur.shape[2] * cur.shape[3]])
+        return cur
 
 
 # Element to add minibatch data
