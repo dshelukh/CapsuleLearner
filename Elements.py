@@ -405,7 +405,49 @@ class LongConvBlockElement(ConvBlockElement):
             cur = tf.concat([cur, tmp], axis = -1)
         return cur
 
+class CleverDenseElement(RunElement):
+    def __init__(self, num_outputs, dropin = 0.05, threshold = 0.8, decay = 0.97, regularizer = None):
+        self.regularizer = regularizer
+        self.num_outputs = num_outputs
+        self.threshold = threshold
+        self.dropin = dropin
+        self.decay = decay
 
+    def training_step(self, inputs, outputs):
+        #in training add dropin first
+        randoms = tf.random_uniform(tf.shape(outputs))
+        dropins_mask = tf.less(randoms, self.dropin)
+        outputs = outputs + self.threshold * tf.cast(dropins_mask, tf.float32)
+
+        # actual training
+        out_transposed = tf.transpose(outputs)
+        activated = tf.greater(out_transposed, 0.0)
+        not_activated = tf.logical_not(activated)
+        # combined way
+        activation_matrix = tf.cast(activated, tf.float32) - tf.cast(not_activated, tf.float32)
+        correlations = tf.transpose(tf.matmul(activation_matrix, inputs))
+
+        # update weights
+        update = tf.assign(self.weights, self.weights * self.decay + (1.0 - self.decay) * correlations)
+        with tf.control_dependencies([update]):
+            return outputs
+
+    def build(self, input, dropout = 0.0, training = True, name = 'clever_dense', regularizer = None):
+        with tf.variable_scope(name, reuse = tf.AUTO_REUSE):
+            inputs = tf.layers.flatten(input)
+            print('Clever dense inputs shape flattened:', inputs.shape)
+            self.weights = tf.get_variable('weights', [inputs.shape[1], self.num_outputs], trainable = False)
+            # outputs as in normal dense without bias
+            outputs = tf.matmul(inputs, self.weights)
+            # remove small activations
+            masked = tf.greater(outputs, self.threshold)
+            print('Clever dense outputs shape after mask:', masked.shape)
+            outputs = outputs * tf.cast(masked, tf.float32)
+            print('Clever dense outputs shape after mask:', outputs.shape)
+            result = tf.cond(training, lambda: self.training_step(inputs, outputs), lambda: outputs)
+            print('Clever dense result shape after cond:', result.shape)
+            result = tf.maximum(tf.minimum(result, 1.0), 0.0)
+        return result
 
 class ConvData():
     def __init__(self, num_features, kernel, stride, padding = 'same', activation = None, element = ConvBlockElement):
@@ -474,6 +516,13 @@ class ResidualBlock():
             conv_for_input = self.input_conv.element(activation = self.input_conv.activation, batch_norm = EmptyElement(), regularizer = regularizer)
             orig = conv_for_input.run(input, self.input_conv, dropout = dropout, training = training, name = 'input_' + name)
         return res + orig
+
+class ReshapeBlock():
+    def __init__(self, size):
+        self.size = size
+
+    def build(self, input, dropout = 0.0, training = True, name = 'resconv', regularizer = None):
+        return tf.reshape(input, [-1, *self.size])
 
 class DropoutBlock():
     def __init__(self, dropout):

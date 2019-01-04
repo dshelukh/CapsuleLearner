@@ -184,30 +184,34 @@ class SimpleNetworkConfig():
         
         self.save_name = 'save_weirdcapsnet_cifar10_0.1'
         self.convs = ConvLayout([
-            ConvData(16, (3, 3), 1, element = self.conv_element),#WeirdConvBlockElement_),
-            BatchNormBlock(element = self.batch_norm),
-            ActivationBlock(tf.nn.relu),
+            CleverDenseElement(1024, dropin = 0.15),
+            CleverDenseElement(1024, dropin = 0.25),
+            CleverDenseElement(1024, dropin = 0.35),
+            ReshapeBlock([32, 32, 1])
+#            ConvData(16, (3, 3), 1, element = self.conv_element),#WeirdConvBlockElement_),
+#            BatchNormBlock(element = self.batch_norm),
+#            ActivationBlock(tf.nn.relu),
             #PreliminaryResultElement(self.num_outputs, 0.35, False, self.dense_element),
 
-            BasicResBlock(16 * self.scale, 1, dropout = self.dropout, element = self.conv_element, adjust_input=True, start_with_activation = False),
-            BasicResBlock(16 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
-            BasicResBlock(16 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
-            BatchNormBlock(element = self.batch_norm),
-            ActivationBlock(tf.nn.relu),
+#            BasicResBlock(16 * self.scale, 1, dropout = self.dropout, element = self.conv_element, adjust_input=True, start_with_activation = False),
+#            BasicResBlock(16 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
+#            BasicResBlock(16 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
+#            BatchNormBlock(element = self.batch_norm),
+#            ActivationBlock(tf.nn.relu),
             #PreliminaryResultElement(self.num_outputs, 0.4, True, self.dense_element),
 
-            BasicResBlock(32 * self.scale, 2, dropout = self.dropout, element = self.conv_element, adjust_input=True, start_with_activation = False),
-            BasicResBlock(32 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
-            BasicResBlock(32 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
-            BatchNormBlock(element = self.batch_norm),
-            ActivationBlock(tf.nn.relu),
+#            BasicResBlock(32 * self.scale, 2, dropout = self.dropout, element = self.conv_element, adjust_input=True, start_with_activation = False),
+#            BasicResBlock(32 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
+#            BasicResBlock(32 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
+#            BatchNormBlock(element = self.batch_norm),
+#            ActivationBlock(tf.nn.relu),
             #PreliminaryResultElement(self.num_outputs, 0.5, True, self.dense_element),
 
-            BasicResBlock(64 * self.scale, 2, dropout = self.dropout, element = ConvBlockElement, adjust_input=True, start_with_activation = False),
-            BasicResBlock(64 * self.scale, 1, dropout = self.dropout, element = ConvBlockElement),
-            BasicResBlock(64 * self.scale, 1, dropout = self.dropout, element = ConvBlockElement),
-            BatchNormBlock(element = self.batch_norm),
-            ActivationBlock(tf.nn.relu),
+#            BasicResBlock(64 * self.scale, 2, dropout = self.dropout, element = ConvBlockElement, adjust_input=True, start_with_activation = False),
+#            BasicResBlock(64 * self.scale, 1, dropout = self.dropout, element = ConvBlockElement),
+#            BasicResBlock(64 * self.scale, 1, dropout = self.dropout, element = ConvBlockElement),
+#            BatchNormBlock(element = self.batch_norm),
+#            ActivationBlock(tf.nn.relu),
 
             #FinalizingElement(self.num_outputs, True, self.dense_element)
             ], batch_norm = EmptyElement())
