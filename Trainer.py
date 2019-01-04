@@ -1,6 +1,7 @@
 '''
 @author: Dmitry
 '''
+
 import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
@@ -137,7 +138,7 @@ class Trainer():
         size = self.dataset.get_size(dataset)
         num_batches = self.dataset.get_num_batches(dataset, batch_size)
         for i in range(0, num_batches):
-            batch_images, batch_labels = self.dataset.get_batch(dataset, i, batch_size)
+            batch_images, batch_labels = self.dataset.get_batch(dataset, i, batch_size, training = False)
             cur_loss, cur_acc = sess.run((tuple(self.loss), self.acc), feed_dict={self.input_data: batch_images,
                                                                                   self.targets: batch_labels,
                                                                                   self.training: False})

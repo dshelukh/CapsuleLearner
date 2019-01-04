@@ -16,7 +16,8 @@ class BasicRunner():
 
     def mean_squared_loss(self, targets, outputs):
         axis = list(range(1, len(list(targets.shape))))
-        return tf.reduce_mean(tf.square(targets - outputs), axis = axis)
+        result = tf.reduce_sum(tf.square(targets - outputs), axis = axis)
+        return result
 
     def get_reconstruction_loss(self, images, reconstructed):
         return self.mean_squared_loss(images, reconstructed)
@@ -215,27 +216,30 @@ class ClassificationRunner(BasicRunner):
         pass
 
     def run(self, config, elements_dict, inputs, training):
-        print(inputs.shape)
         self.codes = elements_dict['encoder'].run(config, inputs, False, training)
-        self.predictions = [elements_dict['predictor'].run(config, code) for code in self.codes]
+        #caps1 = squash(reshapeToCapsules(tf.transpose(self.codes[0], [0, 3, 1, 2]), config.caps1_len, axis = 1))
+        #caps_layer = CapsLayer(caps1, config.num_outputs, config.caps2_len)
+        #caps2 = caps_layer.do_dynamic_routing()
+        flattened = tf.reduce_mean(self.codes[0], axis = [1, 2])
+        self.predictions = [elements_dict['predictor'].run(config, code) for code in [flattened]]
         #self.doubt = [tf.layers.dense(code, 1, activation = tf.sigmoid) for code in self.codes]
         #self.doubt = tf.squeeze(self.doubt[-1], -1)
+        #encoded = tf.contrib.layers.flatten(tf.multiply(caps2, maskForMaxCapsule(self.predictions[0])))
+        encoded = flattened
 
         if config.with_reconstruction:
-            self.reconstructed = elements_dict['generator'].run(config, self.codes, True, training)
+            self.reconstructed = elements_dict['generator'].run(config, encoded, True, training)
+            self.reconstructed = tf.reshape(self.reconstructed, [-1, 32, 32, 3])
 
     def loss_function(self, config, targets, images = None):
-        print(targets.shape)
         labels_mask = tf.reduce_sum(targets, axis = -1)
         #print(self.predictions.shape)
         #classification_loss = self.get_margin_loss(config.loss_config, targets, self.predictions[0], labels_mask)
-        entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels = targets, logits = self.codes[0])#self.get_margin_loss(config.loss_config, targets, self.codes[0], tf.reduce_sum(targets, axis = -1))#tf.nn.softmax_cross_entropy_with_logits_v2(labels = targets, logits = self.codes[0])
+        entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels = targets, logits = self.predictions[0])#self.get_margin_loss(config.loss_config, targets, self.codes[0], tf.reduce_sum(targets, axis = -1))#tf.nn.softmax_cross_entropy_with_logits_v2(labels = targets, logits = self.codes[0])
         #coef = tf.stop_gradient(tf.reduce_mean(entropy, axis = -1))
         #entropy = (1.0 - self.doubt) * entropy + coef * self.doubt
         classification_loss = tf.reduce_sum(entropy, axis = -1)
-        reconstruction_loss = 0
-        if config.with_reconstruction:
-            reconstruction_loss = self.get_reconstruction_loss(images, self.reconstructed)
+
         reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
         #for rl in reg_losses:
         #    print('Reg loss:', rl)
@@ -247,6 +251,13 @@ class ClassificationRunner(BasicRunner):
         else:
             print('No regularization found')
         
+        reconstruction_loss = 0
+        if config.with_reconstruction:
+            reconstruction_loss = tf.reduce_sum(self.get_reconstruction_loss(images, self.reconstructed))
+            reconstruction_loss = config.loss_config.reconstruction_coef * reconstruction_loss
+            retVal = [*retVal, reconstruction_loss]
+            retVal[0] += reconstruction_loss
+
         return retVal# + config.loss_config.reconstruction_coef * reconstruction_loss + reg_constant * sum(reg_losses)
 
     def num_classified(self, config, targets, images = None):

@@ -46,7 +46,7 @@ class SimpleCapsNet():
 
         self.conv1 = tf.layers.conv2d(input_, config.conv1_size, config.conv1_kernel, strides = config.conv1_stride, activation = tf.nn.relu, name = 'conv1')
         self.conv2 = tf.layers.conv2d(self.conv1, config.conv2_size, config.conv2_kernel, strides = config.conv2_stride, name = 'conv2')
-        # transpose to NCHW then reshape and squash
+        # transpose to NCHW than reshape and squash
         self.caps1 = squash(reshapeToCapsules(tf.transpose(self.conv2, [0, 3, 1, 2]), config.caps1_len, axis = 1))
         self.caps_layer = CapsLayer(self.caps1, config.num_outputs, config.caps2_len)
         self.caps2 = self.caps_layer.do_dynamic_routing()

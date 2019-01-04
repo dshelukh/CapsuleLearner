@@ -176,7 +176,7 @@ class WeirdConvBlockElement(ConvBlockElement):
         #world_info = WeirdDenseElement().run(data, self.world_size, self.world_size)
         world_info = self.batch_norm.run(world_info, training, 'world_norm')
         world_info = tf.sigmoid(world_info)
-        world_info = tf.layers.dropout(world_info, 0.33, training = training, name = 'world_dropout')
+        #world_info = tf.layers.dropout(world_info, 0.2, training = training, name = 'world_dropout')
         n_features, kernel, stride, padding = conv_config.get_conv_data()
         kw, kh = kernel if isinstance(kernel, tuple) else (kernel, kernel)
         sw, sh = stride if isinstance(stride, tuple) else (stride, stride)
@@ -304,6 +304,18 @@ class WeirdConvBlockElement4(ConvBlockElement):
         #convolution = tf.Print(convolution, [convolution])
         return convolution
 
+def ortho_regularizer(x):
+    w, h, pred, next = x.shape
+    kernel_base = tf.reshape(x, [w * h * pred, next])
+    kernel_square = tf.expand_dims(tf.transpose(kernel_base, [1, 0]), -1) * kernel_base
+    result = tf.reduce_sum(tf.abs(tf.reduce_sum(kernel_square, axis = -2)))
+    #print('Ortho input', w * h * pred, next, 'square', kernel_square.shape)
+    return result
+
+class OrthoConvBlockElement(ConvBlockElement):
+    def __init__(self, activation = tf.nn.relu, batch_norm = BatchNormElement(), regularizer = None):
+        super(OrthoConvBlockElement, self).__init__(activation, batch_norm, ortho_regularizer)
+
 def extract_patches_func(k, s, padding):
     return lambda x: tf.extract_image_patches([x], (1, k[0], k[1], 1), (1, s[0], s[1], 1), (1, 1, 1, 1), padding = padding.upper())
 
@@ -364,6 +376,37 @@ class IdealConvBlockElement(ConvBlockElement):
         result = l2_squared_norm(patches - conv_ideals, axis = -2) + conv_biases
         return result
 
+class GroupConvBlockElement(ConvBlockElement):
+    def __init__(self, activation = tf.nn.relu, batch_norm = BatchNormElement(), regularizer = None, ngroups = 16, element = OrthoConvBlockElement):
+        super().__init__(activation, batch_norm, regularizer)
+        self.ngroups = ngroups
+        self.element = element
+
+    def get_processed_data(self, inputs, conv_config, training = True):
+        convs = []
+        config = conv_config
+        config.num_features = int(config.num_features / self.ngroups)
+        config.element = self.element
+        for i in range(self.ngroups):
+            convs.append(config)
+        return ConvLayout(convs, isParallel = True).build(inputs, 0.0, training, 'group_conv', self.regularizer)
+
+class LongConvBlockElement(ConvBlockElement):
+    def __init__(self, activation = tf.nn.relu, batch_norm = BatchNormElement(), regularizer = None):
+        super().__init__(activation, batch_norm, regularizer)
+
+    def get_processed_data(self, inputs, conv_config, training = True):
+        config = conv_config
+        n = config.num_features
+        config.num_features = 1
+        cur = inputs
+        for i in range(n):
+            tmp = ConvBlockElement(self.activation, self.batch_norm, self.regularizer).run(cur, config, training = training, name = 'longconv' + str(i))
+            cur = tf.concat([cur, tmp], axis = -1)
+        return cur
+
+
+
 class ConvData():
     def __init__(self, num_features, kernel, stride, padding = 'same', activation = None, element = ConvBlockElement):
         self.num_features, self.kernel, self.stride = num_features, kernel, stride
@@ -393,6 +436,7 @@ class ConvLayout():
                 output = c.element(activation = c.activation, batch_norm = self.batch_norm, regularizer = regularizer).run(cur, c, dropout = dropout, training = training, name = conv_name)
             else:
                 output = c.build(cur, dropout, training, conv_name, regularizer)
+                
                 if isinstance(c, PreliminaryResultElement):
                     if self.isParallel:
                         raise ValueError('Can\'t take preliminary results in forked execution')
@@ -402,7 +446,7 @@ class ConvLayout():
                     out_bools = tf.boolean_mask(out_bools, output[2])
                     output = output[3]
                     #output = tf.Print(output, [resolved, out_bools], message='preliminary', summarize = 10)
-
+                
             if self.isParallel:
                 retVal.append(output)
             else:
@@ -459,18 +503,24 @@ def get_top_k_mask(data, k):
     return tf.cast(mask, tf.bool)
 
 class PreliminaryResultElement():
-    def __init__(self, num_outputs, stop_threshold, use_GAP = True, dense_element = DenseElement, train_bounds = (0.1, 0.6)):
+    def __init__(self, num_outputs, percent_ready, use_GAP = True, dense_element = DenseElement, train_bounds = (0.05, 0.6)):
         self.finalizer = FinalizingElement(num_outputs, use_GAP, dense_element)
-        self.stop_treshold = stop_threshold
+        self.percent_ready = percent_ready
         self.min, self.max = train_bounds
 
     def training_prepare(self, bools, pre_max):
         passed = tf.reduce_sum(tf.cast(bools, tf.int32))
         total = tf.cast(tf.shape(bools)[0], tf.float32)
+        expected = tf.cast(total * tf.constant(self.percent_ready), tf.int32) 
         min_num = tf.cast(total * tf.constant(self.min), tf.int32)
         max_num = tf.cast(total * tf.constant(self.max), tf.int32)
         new_bools = tf.cond(tf.less(passed, min_num), lambda: get_top_k_mask(pre_max, min_num), lambda: tf.cond(tf.greater(passed, max_num), lambda: get_top_k_mask(pre_max, max_num), lambda: bools))
-        return new_bools
+        decay = 0.95
+        expected_val = tf.nn.top_k(pre_max, expected)[0][-1]
+        new_threshold = tf.assign(self.ready_threshold, self.ready_threshold * decay + (1.0 - decay) * expected_val)
+        with tf.control_dependencies([new_threshold]):
+            #new_bools = tf.Print(new_bools, [self.ready_threshold, expected_val])
+            return new_bools
 
     def build(self, data, dropout = 0.0, training = True, name = 'preliminary', regularizer = None):
         pre_logits = self.finalizer.build(data, dropout, training, name, regularizer)
@@ -478,7 +528,10 @@ class PreliminaryResultElement():
         pre_percent = tf.nn.softmax(pre_logits)
         #pre_percent = tf.check_numerics(pre_percent, 'Softmax numerics check failed in' + name)
         pre_max = tf.reduce_max(pre_percent, axis = -1)
-        bools = tf.greater(pre_max, self.stop_treshold)
+
+        self.ready_threshold = tf.get_variable(name + '/threshold', initializer = tf.ones([1]), trainable = False)
+
+        bools = tf.greater(pre_max, self.ready_threshold)
         bools = tf.cond(training, lambda: self.training_prepare(bools, pre_max), lambda: bools)
         bools = tf.stop_gradient(bools)
         not_bools = tf.logical_not(bools)
@@ -690,12 +743,13 @@ class DenseEncoder(RunElement):
     def run(self, config, inputs, reuse = False, training = True):
         element = config.dense_element
         cur = inputs
-        with(tf.variable_scope(self.base_name, reuse=reuse, regularizer=tf.contrib.layers.l1_regularizer(scale = 0.1))):
+        with(tf.variable_scope(self.base_name, reuse=reuse)):
+            regularizer = tf.contrib.layers.l2_regularizer(scale = config.weight_decay)
             for i, dense in enumerate(self.dense):
-                if i != 0:
-                    cur = BatchNormElement().run(cur, training, 'bn%d' % i)
-                    cur = DropoutBlock(0.3).build(cur, 0.5, training, 'dropout%d' % i)
-                cur = element().run(cur, *dense, training = training, name = 'dense%d' % i)
+                #if i != 0:
+                #    cur = BatchNormElement().run(cur, training, 'bn%d' % i)
+                #    cur = DropoutBlock(0.3).build(cur, 0.5, training, 'dropout%d' % i)
+                cur = element(regularizer).run(cur, *dense, training = training, name = 'dense%d' % i)
         return cur
 
 
@@ -749,3 +803,6 @@ class DensePredict():
 class DenseCalcAndPredict():
     def run(self, config, codes):
         return tf.layers.dense(codes, config.num_outputs, name = 'discriminator_result', activation = None)
+
+
+

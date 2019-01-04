@@ -101,7 +101,10 @@ class DatasetWithReconstruction(AbstractDataset):
         self.with_reconstruction = with_reconstruction
 
     def get_shapes(self):
-        return self.dataset.get_shapes()
+        input_shapes, output_shapes = self.dataset.get_shapes()
+        if self.with_reconstruction:
+            output_shapes = [*output_shapes, *input_shapes]
+        return input_shapes, output_shapes
 
     def get_dataset(self, dataset_name):
         return self.dataset.get_dataset(dataset_name)
@@ -112,8 +115,8 @@ class DatasetWithReconstruction(AbstractDataset):
     def get_num_batches(self, dataset, batch_size):
         return self.dataset.get_num_batches(dataset, batch_size)
 
-    def get_batch(self, dataset, num, batch_size, shuffle = False):
-        X, y = self.dataset.get_batch(dataset, num, batch_size, shuffle)
+    def get_batch(self, dataset, num, batch_size, training = False):
+        X, y = self.dataset.get_batch(dataset, num, batch_size, training)
 
         if self.with_reconstruction:
             y = (*y, X) if isinstance(y, tuple) else (y, X)
@@ -130,8 +133,8 @@ class SemiSupervisedDataset(ShuffleDataset):
     def set_code_generator(self, code_generator):
         self.code_generator = code_generator
 
-    def get_batch(self, dataset, num, batch_size, shuffle = True, guaranteed_labels = 5):
-        X, y = super().get_batch(dataset, num, batch_size, shuffle)
+    def get_batch(self, dataset, num, batch_size, training = True, guaranteed_labels = 5):
+        X, y = super().get_batch(dataset, num, batch_size, training)
         labels = y[0] if (isinstance(y, tuple)) else y
         start, end = self.get_batch_position(num, batch_size)
         label_info = dataset.is_labeled if dataset.is_labeled is not None else np.sum(dataset.labels, axis = -1)
@@ -169,9 +172,9 @@ class LazyPrepDataset(ShuffleDataset):
         ShuffleDataset.__init__(self, base, *args, no_shuffle = no_shuffle)
         self.prep = preprocessor
 
-    def get_batch(self, dataset, num, batch_size, shuffle = True):
-        X, y = super().get_batch(dataset, num, batch_size, shuffle)
-        X, y = self.prep.preprocess(X, y)
+    def get_batch(self, dataset, num, batch_size, training = True):
+        X, y = super().get_batch(dataset, num, batch_size, shuffle = training)
+        X, y = self.prep.preprocess(X, y, augmentation = training)
         return X, y
 
 

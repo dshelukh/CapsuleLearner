@@ -71,7 +71,7 @@ class SimpleLossConfig():
         self.margin_m_minus = 0.1
         self.margin_lambda = 0.5
         
-        self.reconstruction_coef = 0.0005
+        self.reconstruction_coef = 0.002
 
 def BasicResBlock(num_features, first_stride = 1, batch_norm = BatchNormElement, element = WeirdConvBlockElement, dropout = 0.4, adjust_input = False, start_with_activation = True):
     input_conv = None if (not adjust_input) and (first_stride == 1) else ConvData(int(num_features), (1, 1), first_stride, element = element)#WeirdConvBlockElement)
@@ -90,13 +90,13 @@ def BasicResBlock(num_features, first_stride = 1, batch_norm = BatchNormElement,
 class SimpleNetworkConfig():
     def __init__(self, num_outputs = 10):
         self.num_outputs = num_outputs
-        self.conv_element = ConvBlockElement
+        self.conv_element = WeirdConvBlockElement
         self.dense_element = DenseElement
-        self.batch_norm = BatchNormElement
+        self.batch_norm = BatchRenormElement
         self.dropout = 0.3
         self.weight_decay = 0.0005
         '''
-        self.save_name = 'save_weirdnet0.1'
+        self.save_name = 'save_weirdcapsnet0.1'
         self.convs = ConvLayout([
                 #ConvData(4, (2, 2), (1, 1), activation = tf.nn.relu)
                 #ConvData(32, (5, 5), 2, activation = tf.nn.relu, element = WeirdConvBlockElement),
@@ -182,36 +182,44 @@ class SimpleNetworkConfig():
         self.scale = 4
         
         
-        self.save_name = 'save_wrn_0.13'
+        self.save_name = 'save_weirdcapsnet_cifar10_0.1'
         self.convs = ConvLayout([
             ConvData(16, (3, 3), 1, element = self.conv_element),#WeirdConvBlockElement_),
             BatchNormBlock(element = self.batch_norm),
             ActivationBlock(tf.nn.relu),
-            #PreliminaryResultElement(self.num_outputs, 0.95, False, self.dense_element),
+            #PreliminaryResultElement(self.num_outputs, 0.35, False, self.dense_element),
 
-#            BasicResBlock(16 * self.scale, 1, dropout = self.dropout, element = self.conv_element, adjust_input=True, start_with_activation = False),
-#            BasicResBlock(16 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
-            #BasicResBlock(16 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
-#            BatchNormBlock(element = self.batch_norm),
-#            ActivationBlock(tf.nn.relu),
-            #PreliminaryResultElement(self.num_outputs, 0.9, True, self.dense_element),
+            BasicResBlock(16 * self.scale, 1, dropout = self.dropout, element = self.conv_element, adjust_input=True, start_with_activation = False),
+            BasicResBlock(16 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
+            BasicResBlock(16 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
+            BatchNormBlock(element = self.batch_norm),
+            ActivationBlock(tf.nn.relu),
+            #PreliminaryResultElement(self.num_outputs, 0.4, True, self.dense_element),
 
-#            BasicResBlock(32 * self.scale, 2, dropout = self.dropout, element = self.conv_element, adjust_input=True, start_with_activation = False),
-#            BasicResBlock(32 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
-            #BasicResBlock(32 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
-#            BatchNormBlock(element = self.batch_norm),
-#            ActivationBlock(tf.nn.relu),
-            #PreliminaryResultElement(self.num_outputs, 0.90, True, self.dense_element),
+            BasicResBlock(32 * self.scale, 2, dropout = self.dropout, element = self.conv_element, adjust_input=True, start_with_activation = False),
+            BasicResBlock(32 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
+            BasicResBlock(32 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
+            BatchNormBlock(element = self.batch_norm),
+            ActivationBlock(tf.nn.relu),
+            #PreliminaryResultElement(self.num_outputs, 0.5, True, self.dense_element),
 
-#            BasicResBlock(64 * self.scale, 2, dropout = self.dropout, element = self.conv_element, adjust_input=True, start_with_activation = False),
-#            BasicResBlock(64 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
-            #BasicResBlock(64 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
-#            BatchNormBlock(element = self.batch_norm),
-#            ActivationBlock(tf.nn.relu),
+            BasicResBlock(64 * self.scale, 2, dropout = self.dropout, element = ConvBlockElement, adjust_input=True, start_with_activation = False),
+            BasicResBlock(64 * self.scale, 1, dropout = self.dropout, element = ConvBlockElement),
+            BasicResBlock(64 * self.scale, 1, dropout = self.dropout, element = ConvBlockElement),
+            BatchNormBlock(element = self.batch_norm),
+            ActivationBlock(tf.nn.relu),
 
-            FinalizingElement(self.num_outputs, False, self.dense_element)
+            #FinalizingElement(self.num_outputs, True, self.dense_element)
             ], batch_norm = EmptyElement())
         
+        self.dense_g = [
+            (8 * 8 * 3, tf.sigmoid),
+            #(8 * 8 * 3 * 2, tf.sigmoid),
+            (8 * 8 * 3 * 4, tf.sigmoid),
+            #(8 * 8 * 3 * 4 * 2, tf.sigmoid),
+            (8 * 8 * 3 * 4 * 4, tf.sigmoid),
+            ]
+
         self.weirds = [
             (4, ConvLayout([])),
             (8, ConvLayout([
@@ -262,13 +270,14 @@ class SimpleNetwork(BasicNet):
             }
         element_dict = {
             'encoder': ConvEncoder(config.convs, DenseElement), #CapsEncoder(),#ConvEncoder(),
-            'predictor': DensePredict()#CapsPredict()#EmptyElementConfig()
+            'predictor': DenseCalcAndPredict(), #DensePredict()#CapsPredict()#EmptyElementConfig()
+            'generator': DenseEncoder(config.dense_g, 'generator'), #CapsEncoder(),#ConvEncoder(),
             }
         super(SimpleNetwork, self).__init__(modes_dict, 'classification', element_dict, config = config)
 
 
 
-def augment_data(data, max_translate = (2, 2)):
+def augment_data(data, max_translate = (4, 4)):
     mtx, mty = max_translate
     N = tf.shape(data)[0]
     transform_mat = tf.concat([tf.ones([N, 1]), tf.zeros([N, 1]), tf.random_uniform([N, 1], minval = -mtx, maxval = mtx),
@@ -284,13 +293,13 @@ class CappedOptimizer():
         gvs = self.optimizer.compute_gradients(loss)
         #g, v = gvs[0]
         #print(g.shape, tf.is_nan(g).shape, tf.clip_by_value(tf.boolean_mask(g, tf.is_nan(g)), -1., 1.).shape)
-        capped_gvs = [(tf.clip_by_value(tf.where(tf.is_nan(grad), tf.zeros_like(grad), grad), -10., 10.), var) for grad, var in gvs]
+        capped_gvs = [(tf.clip_by_value(tf.where(tf.is_nan(grad), tf.zeros_like(grad), grad), -1., 1.), var) for grad, var in gvs]
         return self.optimizer.apply_gradients(capped_gvs)
 
 config = SimpleNetworkConfig()
-#dataset = SvhnDataset(val_split=0.0, feature_range = (0, 1), with_extra = True).get_dataset_for_trainer(with_reconstruction = False)
+#dataset = SvhnDataset(val_split=0.0, feature_range = (0, 1), with_extra = False).get_dataset_for_trainer(with_reconstruction = config.with_reconstruction)
 #dataset = SimpleDataset(num = 3, num_labels = config.num_outputs)
-dataset = Cifar10Dataset(feature_range = (0, 1)).get_dataset_for_trainer(with_reconstruction = False)
+dataset = Cifar10Dataset().get_dataset_for_trainer(with_reconstruction = config.with_reconstruction)
 gc.collect()
 
 
@@ -299,12 +308,16 @@ save_folder = config.save_name
 
 params = TrainerParams()
 params.batch_size = 128
-params.val_check_period = 750
-params.max_epochs = 160
+params.val_check_period = 0
+params.max_epochs = 170
 params.early_stopping = False
 
-params.optimizer = lambda x: tf.train.MomentumOptimizer(x, 0.9, use_nesterov=True)#lambda x: CappedOptimizer(x)#lambda x: tf.train.MomentumOptimizer(x, 0.9, use_nesterov=True)#lambda x: tf.train.AdamOptimizer(x, 0.92)
-params.learning_rate = EpochListScheduler(0.001, [(40, 0.01), (60, 0.001), (90, 0.0001)])#EpochScheduler(0.01, 0.1, 80)
+#params.optimizer = lambda x: tf.train.MomentumOptimizer(x, 0.9, use_nesterov=True)
+params.optimizer = lambda x: CappedOptimizer(x)
+#params.optimizer = lambda x: tf.train.AdamOptimizer(x, 0.92)
+
+
+params.learning_rate = EpochListScheduler(0.03, [(60, 0.01), (120, 0.003), (160, 0.001)])#EpochScheduler(0.01, 0.1, 80)
 #config.weight_decay = config.weight_decay / params.batch_size
 network_base = SimpleNetwork(config)
 network = Network(network_base, *network_base.get_functions_for_trainer())
