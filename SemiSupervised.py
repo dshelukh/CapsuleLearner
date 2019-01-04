@@ -28,7 +28,7 @@ save_folder = args['save']
 batch_size = args['b']
 leave_num = args['l']
 
-need_resave = True
+need_resave = False
 dataset = SvhnDataset(0.3, leave_num).get_dataset_for_trainer()
 network_base = SemiCapsNet() #SemiSupCapsNet() #SemiSupervisedNetwork()
 
@@ -45,7 +45,7 @@ if (mode == 'ae' or mode == 'both'):
     trainer = Trainer(network, dataset, params)
     saver = CustomSaver(folders=[save_folder + '/ae', save_folder + '/ae/epoch'])
     trainer.train(saver)
-    need_resave = False
+    need_resave = True
 
 network2 = Network(network_base, *network_base.get_functions_for_trainer())
 if (mode == 'semi' or mode == 'both'):

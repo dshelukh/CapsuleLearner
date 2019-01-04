@@ -28,6 +28,9 @@ class FlatCodePrepare(RunElement):
     def run(self, config, randoms, *args, **kwargs):
         return randoms, randoms[:, :config.num_outputs]
 
+class SimpleCodePrepare(RunElement):
+    def run(self, config, randoms, *args, **kwargs):
+        return randoms, 0
 # Batch Normalization Elements
 
 # Simple wrapper over batch normalization layer
@@ -56,17 +59,19 @@ class BatchRenormElement(RunElement):
         return tf.layers.batch_normalization(data, training = training, name = name, renorm = True)
 
 # Convolution and deconvolution blocks with batch normalization, activation and dropout
+
 class ConvBlockElement(RunElement):
-    def __init__(self, activation = tf.nn.relu, batch_norm = BatchNormElement()):
+    def __init__(self, activation = tf.nn.relu, batch_norm = BatchNormElement(), regularizer = None):
         self.activation = activation
         self.batch_norm = batch_norm
+        self.regularizer = regularizer
 
-    def get_processed_data(self, data, conv_config):
-        return tf.layers.conv2d(data, *(conv_config.get_conv_data()), name = 'conv')
+    def get_processed_data(self, data, conv_config, training = True):
+        return tf.layers.conv2d(data, *(conv_config.get_conv_data()), name = 'conv', kernel_initializer = tf.variance_scaling_initializer(scale = 2.0, mode = 'fan_in'), kernel_regularizer = self.regularizer)
 
     def run(self, data, conv_config, name, training = True, dropout = 0.5, **kwargs):
         with tf.variable_scope(name):
-            output = self.get_processed_data(data, conv_config)
+            output = self.get_processed_data(data, conv_config, training)
             output = self.batch_norm.run(output, training, 'bn', **kwargs)
             if self.activation is not None:
                 # TODO: add parameters
@@ -76,11 +81,11 @@ class ConvBlockElement(RunElement):
         return output
 
 class DeconvBlockElement(ConvBlockElement):
-    def get_processed_data(self, data, conv_config):
-        return tf.layers.conv2d_transpose(data, *(conv_config.get_conv_data()), name = 'deconv')
+    def get_processed_data(self, data, conv_config, training = True):
+        return tf.layers.conv2d_transpose(data, *(conv_config.get_conv_data()), name = 'deconv', kernel_regularizer = self.regularizer)
 
 class UpsamplingBlockElement(ConvBlockElement):
-    def get_processed_data(self, data, conv_config):
+    def get_processed_data(self, data, conv_config, training = True):
         # data is supposed to be in NHWC format
         h, w = data.shape[1:3]
         strides = conv_config.stride
@@ -89,7 +94,411 @@ class UpsamplingBlockElement(ConvBlockElement):
             strides = (strides, strides)
         
         resized = tf.image.resize_images(data, [h * strides[0], w * strides[1]], method = tf.image.ResizeMethod.BILINEAR)
-        return tf.layers.conv2d(resized, conv_config.num_features, conv_config.kernel, padding = conv_config.padding, name = 'upsampl')
+        return tf.layers.conv2d(resized, conv_config.num_features, conv_config.kernel, padding = conv_config.padding, name = 'upsampl', kernel_regularizer = self.regularizer)
+
+def get_data_and_world_info(inputs, world_size = 16, activation = tf.tanh, regularizer = None):
+    if not isinstance(inputs, tuple):
+        inputs = (inputs, None)
+
+    if not (inputs[1] is None):
+        return inputs
+    else:
+        return (inputs[0], tf.layers.dense(tf.layers.flatten(inputs[0]), world_size, activation = activation, kernel_regularizer = regularizer))
+
+class DenseElement(RunElement):
+    def __init__(self, regularizer = None):
+        self.regularizer = regularizer
+    def run(self, inputs, num_outputs, activation = None, name = 'dense', *args, **kwargs):
+        with tf.variable_scope(name, reuse = tf.AUTO_REUSE):
+            result = tf.layers.dense(inputs, num_outputs, activation = activation, kernel_regularizer = self.regularizer)
+        return result
+
+class WeirdDenseElement(RunElement):
+    def __init__(self, regularizer = None):
+        self.regularizer = regularizer
+    def run(self, inputs, num_outputs, activation = None, world_size = 16, training = False, name = 'weird_dense'):
+        with tf.variable_scope(name):
+            data, world_info = get_data_and_world_info(inputs, world_size, tf.tanh, self.regularizer)#tf.layers.dense(flattened, world_size, activation = tf.tanh)
+            world_info = BatchNormElement().run(world_info, training, 'world_norm')
+            #world_info = tf.layers.dropout(world_info, 0.1, training = training, name = 'world_dropout')
+            flattened = tf.layers.flatten(data)
+            input_size = flattened.get_shape()[-1]
+            dense_weights = tf.layers.dense(world_info, input_size * num_outputs, kernel_regularizer = self.regularizer)
+            dense_weights = tf.reshape(dense_weights, [-1, input_size, num_outputs])
+            dense_bias = tf.layers.dense(world_info, num_outputs, kernel_regularizer = self.regularizer)
+            input_data = tf.expand_dims(flattened, axis = 1)
+            print('Weird dense', input_data.get_shape(), dense_weights.get_shape())
+            output = tf.squeeze(tf.matmul(input_data, dense_weights), [1]) + dense_bias
+            print('Weird dense', output.get_shape())
+            if activation:
+                output = activation(output)
+        return output
+
+class WeirdConvBlockElement_(ConvBlockElement):
+    def __init__(self, activation = tf.nn.relu, batch_norm = BatchNormElement(), world_size = 4, regularizer = None):
+        self.world_size = world_size
+        super(WeirdConvBlockElement_, self).__init__(activation, batch_norm, regularizer)
+
+    def get_processed_data(self, inputs, conv_config, training = True):
+        #internal = tf.layers.dense(tf.layers.flatten(data), self.world_size, activation = tf.tanh)
+        data, world_info = get_data_and_world_info(inputs, self.world_size, None, self.regularizer)#tf.layers.dense(tf.layers.flatten(data), self.world_size, activation = tf.tanh)
+        #world_info = WeirdDenseElement().run(data, self.world_size, self.world_size)
+        world_info = self.batch_norm.run(world_info, training, 'world_norm')
+        world_info = tf.sigmoid(world_info)
+        world_info = tf.layers.dropout(world_info, 0.33, training = training, name = 'world_dropout')
+        world_info = tf.Print(world_info, [world_info[0], world_info[1]], summarize = 4)
+        n_features, kernel, stride, padding = conv_config.get_conv_data()
+        kw, kh = kernel if isinstance(kernel, tuple) else (kernel, kernel)
+        sw, sh = stride if isinstance(stride, tuple) else (stride, stride)
+        num_channels = data.get_shape().as_list()[-1]
+
+        activation = None#tf.tanh
+        conv_kernels = tf.layers.dense(world_info, n_features * kw * kh * num_channels, activation = activation, kernel_regularizer = self.regularizer)
+        conv_kernels = tf.reshape(conv_kernels, [-1, kw, kh, num_channels, n_features])
+        conv_biases = tf.layers.dense(world_info, n_features, activation = activation, kernel_regularizer = self.regularizer)
+
+        #data = tf.Print(data, [conv_kernels[0][:kw][:kh][0][0], conv_kernels[1][:kw][:kh][0][0], conv_biases[0], conv_biases[1]], summarize = 9)
+        convolution = tf.map_fn(lambda x: tf.nn.convolution([x[0]], x[1], padding.upper(), [sw, sh]) + x[2], (data, conv_kernels, conv_biases), dtype=tf.float32, name = 'conv', parallel_iterations = 1000)
+        #convolution = tf.Print(convolution, [tf.shape(convolution)], summarize = 10)
+        convolution = tf.squeeze(convolution, [1])
+        print(convolution.get_shape())
+        #convolution = tf.Print(convolution, [convolution])
+        return convolution
+
+class WeirdConvBlockElement(ConvBlockElement):
+    def __init__(self, activation = tf.nn.relu, batch_norm = BatchNormElement(), world_size = 4, regularizer = None):
+        self.world_size = world_size
+        super(WeirdConvBlockElement, self).__init__(activation, batch_norm, regularizer)
+
+    def get_processed_data(self, inputs, conv_config, training = True):
+        #internal = tf.layers.dense(tf.layers.flatten(data), self.world_size, activation = tf.tanh)
+        data, world_info = get_data_and_world_info(inputs, self.world_size, None, self.regularizer)#tf.layers.dense(tf.layers.flatten(data), self.world_size, activation = tf.tanh)
+        #world_info = WeirdDenseElement().run(data, self.world_size, self.world_size)
+        world_info = self.batch_norm.run(world_info, training, 'world_norm')
+        world_info = tf.sigmoid(world_info)
+        world_info = tf.layers.dropout(world_info, 0.33, training = training, name = 'world_dropout')
+        n_features, kernel, stride, padding = conv_config.get_conv_data()
+        kw, kh = kernel if isinstance(kernel, tuple) else (kernel, kernel)
+        sw, sh = stride if isinstance(stride, tuple) else (stride, stride)
+        num_channels = data.get_shape().as_list()[-1]
+
+        activation = None#tf.tanh
+        conv_kernels = tf.layers.dense(world_info, n_features * kw * kh * num_channels, activation = activation, kernel_regularizer = self.regularizer)
+        conv_kernels = tf.reshape(conv_kernels, [-1, kw, kh, num_channels, n_features])
+        conv_biases = tf.layers.dense(world_info, n_features, activation = activation, kernel_regularizer = self.regularizer)
+
+        convolution = tf.map_fn(lambda x: tf.nn.convolution([x[0]], x[1], padding.upper(), [sw, sh]) + x[2], (data, conv_kernels, conv_biases), dtype=tf.float32, name = 'conv', parallel_iterations = 1000)
+        #convolution = tf.Print(convolution, [tf.shape(convolution)], summarize = 10)
+        convolution = tf.squeeze(convolution, [1])
+        print(convolution.get_shape())
+        #convolution = tf.Print(convolution, [convolution])
+        return convolution
+
+class WeirdConvBlockElement2(ConvBlockElement):
+    def __init__(self, activation = tf.nn.relu, batch_norm = BatchNormElement(), world_size = 4):
+        self.world_size = world_size
+        super(WeirdConvBlockElement2, self).__init__(activation, batch_norm)
+
+    def get_processed_data(self, inputs, conv_config, training = True):
+        n_features, kernel, stride, padding = conv_config.get_conv_data()
+        data, world_info = get_data_and_world_info(inputs, n_features * self.world_size, tf.tanh)
+        world_info = tf.reshape(world_info, [-1, n_features, self.world_size])
+
+        world_info = self.batch_norm.run(world_info, training, 'world_norm')
+        #world_info = tf.layers.dropout(world_info, 0.33, training = training, name = 'world_dropout')
+
+        kw, kh = kernel if isinstance(kernel, tuple) else (kernel, kernel)
+        sw, sh = stride if isinstance(stride, tuple) else (stride, stride)
+        num_channels = data.get_shape().as_list()[-1]
+
+        activation = None #tf.tanh
+        conv_kernels = tf.layers.dense(world_info, kw * kh * num_channels, activation = activation, kernel_regularizer = lambda x: tf.reduce_sum(tf.sqrt(tf.abs(x))))
+        conv_kernels = tf.transpose(conv_kernels, [0, 2, 1])
+        conv_kernels = tf.reshape(conv_kernels, [-1, kw, kh, num_channels, n_features])
+        conv_biases = tf.layers.dense(world_info, 1, activation = activation)
+        conv_biases = tf.squeeze(conv_biases, 2)
+
+        #data = tf.Print(data, [tf.shape(data), tf.shape(conv_kernels), tf.shape(conv_biases)], summarize = 10)
+        convolution = tf.map_fn(lambda x: tf.nn.convolution([x[0]], x[1], padding.upper(), [sw, sh]) + x[2], (data, conv_kernels, conv_biases), dtype=tf.float32, name = 'conv', parallel_iterations = 1000)
+        #convolution = tf.Print(convolution, [tf.shape(convolution)], summarize = 10)
+        convolution = tf.squeeze(convolution, [1])
+        print(convolution.get_shape())
+        #convolution = tf.Print(convolution, [convolution])
+        return convolution
+
+class WeirdConvBlockElement3(ConvBlockElement):
+    def __init__(self, activation = tf.nn.relu, batch_norm = BatchNormElement(), world_size = 16, param_size = 4):
+        self.world_size = world_size
+        self.param_size = param_size
+        super(WeirdConvBlockElement3, self).__init__(activation, batch_norm)
+
+    def get_processed_data(self, inputs, conv_config, training = True):
+        n_features, kernel, stride, padding = conv_config.get_conv_data()
+        data, world_info = get_data_and_world_info(inputs, self.world_size, tf.sigmoid)
+        world_info = tf.layers.dense(world_info, n_features * self.param_size, tf.sigmoid, kernel_regularizer = lambda x: tf.reduce_sum(tf.sqrt(tf.abs(x))))
+        world_info = tf.reshape(world_info, [-1, n_features, self.param_size])
+
+        world_info = self.batch_norm.run(world_info, training, 'world_norm')
+        #world_info = tf.layers.dropout(world_info, 0.33, training = training, name = 'world_dropout')
+
+        kw, kh = kernel if isinstance(kernel, tuple) else (kernel, kernel)
+        sw, sh = stride if isinstance(stride, tuple) else (stride, stride)
+        num_channels = data.get_shape().as_list()[-1]
+
+        activation = None #tf.tanh
+        conv_kernels = tf.layers.dense(world_info, kw * kh * num_channels, activation = activation)
+        conv_kernels = tf.transpose(conv_kernels, [0, 2, 1])
+        conv_kernels = tf.reshape(conv_kernels, [-1, kw, kh, num_channels, n_features])
+        conv_biases = tf.layers.dense(world_info, 1, activation = activation)
+        conv_biases = tf.squeeze(conv_biases, 2)
+
+        #data = tf.Print(data, [tf.shape(data), tf.shape(conv_kernels), tf.shape(conv_biases)], summarize = 10)
+        convolution = tf.map_fn(lambda x: tf.nn.convolution([x[0]], x[1], padding.upper(), [sw, sh]) + x[2], (data, conv_kernels, conv_biases), dtype=tf.float32, name = 'conv', parallel_iterations = 1000)
+        #convolution = tf.Print(convolution, [tf.shape(convolution)], summarize = 10)
+        convolution = tf.squeeze(convolution, [1])
+        print(convolution.get_shape())
+        #convolution = tf.Print(convolution, [convolution])
+        return convolution
+
+class WeirdConvBlockElement4(ConvBlockElement):
+    def __init__(self, activation = tf.nn.relu, batch_norm = BatchNormElement(), world_size = 16, dense_param_size = 4, conv_param_size = 8):
+        self.world_size = world_size
+        self.dense_param_size = dense_param_size
+        self.conv_param_size = conv_param_size
+        super(WeirdConvBlockElement4, self).__init__(activation, batch_norm)
+
+    def get_processed_data(self, inputs, conv_config, training = True):
+        n_features, kernel, stride, padding = conv_config.get_conv_data()
+        data, world_info = get_data_and_world_info(inputs, self.world_size, tf.sigmoid)
+        choice_regularizer = lambda x: tf.reduce_sum(tf.sqrt(tf.abs(x)))
+
+        world_info = tf.layers.dense(world_info, n_features * self.dense_param_size, kernel_regularizer = choice_regularizer)
+        world_info = tf.reshape(world_info, [-1, n_features, self.dense_param_size])
+
+        world_info = self.batch_norm.run(world_info, training, 'world_norm')
+
+        kw, kh = kernel if isinstance(kernel, tuple) else (kernel, kernel)
+        sw, sh = stride if isinstance(stride, tuple) else (stride, stride)
+        h, w, num_channels = tuple(data.get_shape().as_list()[1:])
+
+        preconv = tf.layers.conv2d(data, self.conv_param_size * n_features, 1, name = 'preconv', kernel_regularizer = choice_regularizer)
+        #extract features for each conv
+        preconv = tf.reshape(preconv, [-1, h, w, self.conv_param_size, n_features])
+        #move kernelwise features up
+        preconv = tf.transpose(preconv, [0, 4, 1, 2, 3])
+        #combine batch and kernelwise features
+        preconv = tf.reshape(preconv, [-1, h, w, self.conv_param_size])
+
+        activation = None
+        conv_kernels = tf.layers.dense(world_info, kw * kh * self.conv_param_size, activation = activation)
+        conv_kernels = tf.reshape(conv_kernels, [-1, kw, kh, self.conv_param_size, 1])
+        conv_biases = tf.layers.dense(world_info, 1, activation = activation)
+        conv_biases = tf.reshape(conv_biases, [-1])
+
+        convolution = tf.map_fn(lambda x: tf.nn.convolution([x[0]], x[1], padding.upper(), [sw, sh]) + x[2], (preconv, conv_kernels, conv_biases), dtype=tf.float32, name = 'conv', parallel_iterations = 10000)
+        #convolution = tf.Print(convolution, [tf.shape(convolution)], summarize = 10)
+        h1, w1 = tuple(convolution.get_shape().as_list()[2:4])
+        convolution = tf.reshape(convolution, [-1, n_features, h1, w1])
+        convolution = tf.transpose(convolution, [0, 2, 3, 1])
+        print(convolution.get_shape())
+        #convolution = tf.Print(convolution, [convolution])
+        return convolution
+
+def extract_patches_func(k, s, padding):
+    return lambda x: tf.extract_image_patches([x], (1, k[0], k[1], 1), (1, s[0], s[1], 1), (1, 1, 1, 1), padding = padding.upper())
+
+def ideal_conv(image, ideal, bias, extractor):
+    patches = extractor(image)
+    patches = tf.expand_dims(patches, axis = -1)
+    return l2_squared_norm(patches - ideal, axis = -2) + bias
+
+class WeirdIdealConvBlockElement(ConvBlockElement):
+    def __init__(self, activation = tf.nn.relu, batch_norm = BatchNormElement(), world_size = 16):
+        self.world_size = world_size
+        super().__init__(activation, batch_norm)
+
+    def get_processed_data(self, inputs, conv_config, training = True):
+        #internal = tf.layers.dense(tf.layers.flatten(data), self.world_size, activation = tf.tanh)
+        data, world_info = get_data_and_world_info(inputs, self.world_size, tf.tanh)#tf.layers.dense(tf.layers.flatten(data), self.world_size, activation = tf.tanh)
+        #world_info = WeirdDenseElement().run(data, self.world_size, self.world_size)
+        world_info = self.batch_norm.run(world_info, training, 'world_norm')
+        world_info = tf.layers.dropout(world_info, 0.33, training = training, name = 'world_dropout')
+        #world_info = BatchRenormElement().run(world_info, training, 'renorm')
+        n_features, kernel, stride, padding = conv_config.get_conv_data()
+        kw, kh = kernel if isinstance(kernel, tuple) else (kernel, kernel)
+        sw, sh = stride if isinstance(stride, tuple) else (stride, stride)
+        num_channels = data.get_shape().as_list()[-1]
+
+        activation = None #tf.tanh
+        conv_ideals = tf.layers.dense(world_info, n_features * kw * kh * num_channels, activation = activation)
+        conv_ideals = tf.reshape(conv_ideals, [-1, 1, 1, kw * kh * num_channels, n_features])
+        conv_biases = tf.layers.dense(world_info, n_features, activation = activation)
+        conv_biases = tf.reshape(conv_biases, [-1, 1, 1, n_features])
+
+        #patches = tf.extract_image_patches(inputs, (1, kw, kh, 1), (1, sw, sh, 1), (1, 1, 1, 1), padding = padding.upper())
+        #patches = tf.expand_dims(patches, axis = -1)
+        extractor = extract_patches_func((kw, kh), (sw, sh), padding)
+        #Compared to straight calculation map_fn helps reduce space requirements (about 1.5-2 times)
+        result = tf.map_fn(lambda x: ideal_conv(*x, extractor), (data, conv_ideals, conv_biases), dtype=tf.float32, name = 'conv', parallel_iterations = 1000)
+        #convolution = tf.Print(convolution, [tf.shape(convolution)], summarize = 10)
+        result = tf.squeeze(result, [1])
+        #result = l2_squared_norm(patches - conv_ideals, axis = -2) + conv_biases
+        return result
+
+class IdealConvBlockElement(ConvBlockElement):
+    def __init__(self, activation = tf.nn.relu, batch_norm = BatchNormElement(), world_size = 16):
+        self.world_size = world_size
+        super().__init__(activation, batch_norm)
+
+    def get_processed_data(self, inputs, conv_config, training = True):
+        n_features, kernel, stride, padding = conv_config.get_conv_data()
+        kw, kh = kernel if isinstance(kernel, tuple) else (kernel, kernel)
+        sw, sh = stride if isinstance(stride, tuple) else (stride, stride)
+        num_channels = inputs.get_shape().as_list()[-1]
+
+        conv_ideals = tf.get_variable('ideals', [1, 1, kw * kh * num_channels, n_features], initializer = tf.truncated_normal_initializer())
+        conv_biases = tf.get_variable('ideals',[1, 1, n_features], initializer = tf.truncated_normal_initializer())
+
+        patches = tf.extract_image_patches(inputs, (1, kw, kh, 1), (1, sw, sh, 1), (1, 1, 1, 1), padding = padding.upper())
+        patches = tf.expand_dims(patches, axis = -1)
+        result = l2_squared_norm(patches - conv_ideals, axis = -2) + conv_biases
+        return result
+
+class ConvData():
+    def __init__(self, num_features, kernel, stride, padding = 'same', activation = None, element = ConvBlockElement):
+        self.num_features, self.kernel, self.stride = num_features, kernel, stride
+        self.padding = padding
+        self.activation = activation
+        self.element = element
+
+    def get_conv_data(self):
+        return self.num_features, self.kernel, self.stride, self.padding
+
+class ConvLayout():
+    def __init__(self, convs, isParallel = False, batch_norm = EmptyElement()):
+        self.convs = convs
+        self.isParallel = isParallel
+        self.batch_norm = batch_norm
+
+    def build(self, input, dropout = 0.0, training = True, name = 'conv', regularizer = None):
+        cur = input
+        retVal = []
+        pre_vals = []
+        pre_bools = []
+        out_bools = tf.range(tf.shape(input)[0])
+
+        for i, c in enumerate(self.convs):
+            conv_name = name + ('_%d' % i)#name + ('_%d' % i) #name + str(i)
+            if isinstance(c, ConvData):
+                output = c.element(activation = c.activation, batch_norm = self.batch_norm, regularizer = regularizer).run(cur, c, dropout = dropout, training = training, name = conv_name)
+            else:
+                output = c.build(cur, dropout, training, conv_name, regularizer)
+                if isinstance(c, PreliminaryResultElement):
+                    if self.isParallel:
+                        raise ValueError('Can\'t take preliminary results in forked execution')
+                    resolved = output[0]
+                    pre_vals.append(output[0])
+                    pre_bools.append(tf.boolean_mask(out_bools, output[1]))
+                    out_bools = tf.boolean_mask(out_bools, output[2])
+                    output = output[3]
+                    #output = tf.Print(output, [resolved, out_bools], message='preliminary', summarize = 10)
+
+            if self.isParallel:
+                retVal.append(output)
+            else:
+                cur = output
+
+        if (len(pre_vals) > 0):
+            print('pre_vals not none!')
+            pre_vals.append(cur)
+            pre_bools.append(out_bools)
+            cur = tf.gather(tf.concat(pre_vals, axis = 0), tf.stop_gradient(tf.contrib.framework.argsort(tf.concat(pre_bools, axis = 0))))
+
+        #cur = tf.Print(cur, [cur], message='result!', summarize = 20)
+
+        return tf.concat(retVal, axis = -1) if self.isParallel else cur
+
+class ResidualBlock():
+    def __init__(self, convs, input_conv = None):
+        self.convs = convs
+        self.input_conv = input_conv
+
+    def build(self, input, dropout = 0.0, training = True, name = 'resconv', regularizer = None):
+        res = self.convs.build(input, dropout, training, name, regularizer)
+        orig = input
+        if (self.input_conv is not None):
+            conv_for_input = self.input_conv.element(activation = self.input_conv.activation, batch_norm = EmptyElement(), regularizer = regularizer)
+            orig = conv_for_input.run(input, self.input_conv, dropout = dropout, training = training, name = 'input_' + name)
+        return res + orig
+
+class DropoutBlock():
+    def __init__(self, dropout):
+        self.dropout = dropout
+
+    def build(self, input, dropout = 0.0, training = True, name = 'dropout', regularizer = None):
+        return tf.layers.dropout(input, self.dropout, training = training, name = name)
+
+class FinalizingElement():
+    def __init__(self, num_outputs, use_GAP = True, dense_element = DenseElement):
+        self.num_outputs = num_outputs
+        self.use_GAP = use_GAP
+        self.dense_element = dense_element
+
+    def build(self, data, dropout = 0.0, training = True, name = 'finish', regularizer = None):
+        if (self.use_GAP):
+            data = tf.reduce_mean(data, axis = [1, 2])
+        else:
+            data = tf.layers.flatten(data)
+
+        return self.dense_element(regularizer).run(data, self.num_outputs, name = name)
+
+def get_top_k_mask(data, k):
+    topk, indicies = tf.nn.top_k(data, k)
+    mask = tf.reduce_sum(tf.one_hot(indicies, tf.shape(data)[0]), axis = -2)
+    #mask = tf.Print(mask, [data, indicies, mask], summarize = 128)
+    return tf.cast(mask, tf.bool)
+
+class PreliminaryResultElement():
+    def __init__(self, num_outputs, stop_threshold, use_GAP = True, dense_element = DenseElement, train_bounds = (0.1, 0.6)):
+        self.finalizer = FinalizingElement(num_outputs, use_GAP, dense_element)
+        self.stop_treshold = stop_threshold
+        self.min, self.max = train_bounds
+
+    def training_prepare(self, bools, pre_max):
+        passed = tf.reduce_sum(tf.cast(bools, tf.int32))
+        total = tf.cast(tf.shape(bools)[0], tf.float32)
+        min_num = tf.cast(total * tf.constant(self.min), tf.int32)
+        max_num = tf.cast(total * tf.constant(self.max), tf.int32)
+        new_bools = tf.cond(tf.less(passed, min_num), lambda: get_top_k_mask(pre_max, min_num), lambda: tf.cond(tf.greater(passed, max_num), lambda: get_top_k_mask(pre_max, max_num), lambda: bools))
+        return new_bools
+
+    def build(self, data, dropout = 0.0, training = True, name = 'preliminary', regularizer = None):
+        pre_logits = self.finalizer.build(data, dropout, training, name, regularizer)
+        #pre_logits = tf.check_numerics(pre_logits, 'Logits numerics check failed in' + name)
+        pre_percent = tf.nn.softmax(pre_logits)
+        #pre_percent = tf.check_numerics(pre_percent, 'Softmax numerics check failed in' + name)
+        pre_max = tf.reduce_max(pre_percent, axis = -1)
+        bools = tf.greater(pre_max, self.stop_treshold)
+        bools = tf.cond(training, lambda: self.training_prepare(bools, pre_max), lambda: bools)
+        bools = tf.stop_gradient(bools)
+        not_bools = tf.logical_not(bools)
+        ready = tf.boolean_mask(pre_logits, bools)
+        need_continue = tf.boolean_mask(data, not_bools)
+        return ready, bools, not_bools, need_continue
+
+class BatchNormBlock():
+    def __init__(self, element = BatchNormElement):
+        self.element = element
+
+    def build(self, input, dropout = 0.0, training = True, name = 'bn', regularizer = None):
+        return self.element().run(input, training = training, name = name)
+
+class ActivationBlock():
+    def __init__(self, fn):
+        self.fn = fn
+
+    def build(self, input, dropout = 0.0, training = True, name = 'activation', regularizer = None):
+        return self.fn(input)
 
 # Base class for VB users
 class VbUserElement(RunElement):
@@ -161,12 +570,17 @@ class LSTMGenerator(VbUserElement):
 
 # Convert images to code
 class CapsEncoder(RunElement):
+    def __init__(self, convs, batch_norm = BatchNormElement()):
+        self.batch_norm = batch_norm
+        self.convs = convs
+
     def run(self, config, inputs, reuse = False, training = True):
 
         with(tf.variable_scope('discriminator', reuse=reuse)):
-            cur = inputs
-            for i, conv_info in enumerate(config.conv_d):
-                cur = ConvBlockElement(activation = conv_info.activation).run(cur, conv_info, training = training, name = 'conv%d' % i)
+            #cur = inputs
+            cur = self.convs.build(inputs, 0.0, training)
+            #for i, conv_info in enumerate(config.conv_d):
+            #    cur = WeirdConvBlockElement(activation = conv_info.activation, batch_norm = self.batch_norm).run(cur, conv_info, training = training, name = 'conv%d' % i)
 
             caps1 = squash(reshapeToCapsules(tf.transpose(cur, [0, 3, 1, 2]), config.caps1_len, axis = 1))
             caps_layer = CapsLayer(caps1, config.num_outputs, config.caps2_len)
@@ -191,7 +605,7 @@ class LSTMEncoder(RunElement):
 
         return cell, initial_state
 
-    def run(self, config, inputs, training = True):
+    def run(self, config, inputs, reuse = False, training = True):
         # Build the LSTM cell
         keep_prob = tf.cond(training, lambda: 1.0 - config.dropout, lambda: 1.0)
 
@@ -200,23 +614,90 @@ class LSTMEncoder(RunElement):
         ### Run the data through the RNN layers
 
         cur = tf.expand_dims(inputs, axis = -1)
-        for conv in config.convs:
-            cur = tf.layers.conv2d(cur, *conv.get_conv_data(), activation = conv.activation)
-        cur = tf.reshape(cur, [-1, cur.shape[1], cur.shape[2] * cur.shape[3]])
+        #for conv in config.convs:
+        #    cur = tf.layers.conv2d(cur, *conv.get_conv_data(), activation = conv.activation)
+        #cur = tf.reshape(cur, [-1, cur.shape[1], cur.shape[2] * cur.shape[3]])
 
         # Run each sequence step through the RNN with tf.nn.dynamic_rnn 
         outputs, state = tf.nn.dynamic_rnn(cell1, cur, initial_state=self.initial_state1, scope='lstm1')
-        added_features = tf.concat((tf.layers.dense(outputs, config.dense_size, activation = tf.tanh), outputs), axis = 2)
+        new_features = tf.layers.dense(outputs, config.dense_size, activation = tf.tanh) #WeirdDenseElement().run(outputs, config.dense_size, activation = tf.tanh, training = training, name = 'denseIn') #
+        added_features = tf.concat((new_features, outputs), axis = 2)
 
         outputs2, state = tf.nn.dynamic_rnn(cell2, added_features, initial_state=self.initial_state2, scope='lstm2')
         self.final_state = state
 
-        cur = tf.expand_dims(outputs2, axis = -2)
-        for i, conv_info in enumerate(config.convs):
-            deconv = UpsamplingBlockElement(activation = conv_info.activation, batch_norm = EmptyElement())
-            cur = deconv.run(cur, conv_info, training = training, dropout = 0.0, name = 'deconv%d' % i)
-        cur = tf.reshape(cur, [-1, cur.shape[1], cur.shape[2] * cur.shape[3]])
+        #cur = tf.expand_dims(outputs2, axis = -2)
+        #for i, conv_info in enumerate(config.convs):
+        #    deconv = UpsamplingBlockElement(activation = conv_info.activation, batch_norm = EmptyElement())
+        #    cur = deconv.run(cur, conv_info, training = training, dropout = 0.0, name = 'deconv%d' % i)
+        #cur = tf.reshape(cur, [-1, cur.shape[1], cur.shape[2] * cur.shape[3]])
+        cur = outputs2[:, -1, :]
+        print('LSTM output', cur.shape)
         return cur
+
+class ConvEncoder(RunElement):
+    def __init__(self, convs, dense_element = DenseElement):
+        self.convs = convs
+        self.dense_element = dense_element
+
+    def run(self, config, inputs, reuse = False, training = True):
+
+        with(tf.variable_scope('encoder', reuse=reuse)):
+            regularizer = tf.contrib.layers.l2_regularizer(scale = config.weight_decay)
+            cur = self.convs.build(inputs, 0.0, training, regularizer = regularizer)
+
+            #cur = tf.layers.flatten(cur)#tf.reduce_mean(cur, axis = [1, 2])#tf.layers.flatten(cur)
+            #cur = self.dense_element().run(cur, config.num_outputs)
+            return [cur]
+            '''
+            output = None
+            world_size = 16
+            world_info = None
+            coef = 1.0
+            num_outputs = config.num_outputs
+            retVal = []
+            for num, i in enumerate(config.weirds):
+                size, convs = i
+
+                with(tf.variable_scope('convLayout%d' % num)):
+                    resized = tf.image.resize_images(inputs, [size, size], method = tf.image.ResizeMethod.BILINEAR)
+                    result = convs.build(resized, 0.5 * size / 32.0, training)
+                    result = tf.layers.flatten(result)
+                    result = WeirdDenseElement().run(result, world_size + num_outputs, world_size = world_size)#tf.layers.dense(cur, config.num_outputs)
+                #conv = ConvData(8, 3, 2, activation = tf.tanh)
+                #result =  WeirdConvBlockElement(world_size = world_size).run((resized, None), conv, training = training, dropout = 0.5 * i / 32.0, name = 'weird%d' % num)
+                #result =  WeirdDenseElement().run((resized, world_info), world_size + num_outputs, world_size = world_size)
+                #result = BatchNormElement().run(result, training = training, name = 'bn%d' % i)
+                #result = tf.tanh(result)
+                #result = tf.layers.dropout(result, 0.5, training = training)
+                #result =  WeirdDenseElement().run((result, None), world_size + num_outputs, world_size = world_size, activation = tf.tanh)
+                if output is None:
+                    output = result[:, :num_outputs]
+                else:
+                    output += coef * result[:, :num_outputs]
+                    coef = coef * 1.0
+                world_info = result[:, num_outputs:]
+                retVal.append(output)
+            print('Output size:', output.shape)
+            return retVal
+            '''
+
+class DenseEncoder(RunElement):
+    def __init__(self, dense, base_name = 'encoder'):
+        self.dense = dense
+        self.base_name = base_name
+
+    def run(self, config, inputs, reuse = False, training = True):
+        element = config.dense_element
+        cur = inputs
+        with(tf.variable_scope(self.base_name, reuse=reuse, regularizer=tf.contrib.layers.l1_regularizer(scale = 0.1))):
+            for i, dense in enumerate(self.dense):
+                if i != 0:
+                    cur = BatchNormElement().run(cur, training, 'bn%d' % i)
+                    cur = DropoutBlock(0.3).build(cur, 0.5, training, 'dropout%d' % i)
+                cur = element().run(cur, *dense, training = training, name = 'dense%d' % i)
+        return cur
+
 
 
 # Element to add minibatch data
@@ -261,6 +742,10 @@ class FlatPredict():
     def run(self, config, codes):
         return codes[:, :config.num_outputs]
 
+class DensePredict():
+    def run(self, config, codes):
+        return tf.nn.softmax(codes)
 
-
-
+class DenseCalcAndPredict():
+    def run(self, config, codes):
+        return tf.layers.dense(codes, config.num_outputs, name = 'discriminator_result', activation = None)

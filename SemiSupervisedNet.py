@@ -7,15 +7,6 @@ import tensorflow as tf
 from Trainer import *
 from Runners import *
 
-class ConvData():
-    def __init__(self, num_features, kernel, stride, padding = 'same', activation = None):
-        self.num_features, self.kernel, self.stride = num_features, kernel, stride
-        self.padding = padding
-        self.activation = activation
-
-    def get_conv_data(self):
-        return self.num_features, self.kernel, self.stride, self.padding
-
 class SemiSupervisedConfig():
     def __init__(self, num_outputs = 10, num_d_conv = 3, num_g_conv = 3, alpha = 0.01, start_features = 16, conv_kernel = 3, conv_stride = 2,
                  code_size = 80, first_decode_shape = [4, 4, 16], orig_channels = 3, mu = 0.1):

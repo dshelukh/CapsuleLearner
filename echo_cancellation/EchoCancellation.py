@@ -18,8 +18,8 @@ class EchoCancellationConfig():
         self.lstm2_layers = 1
         self.dropout = 0.0
 
-        self.out_size = 32
-        self.chunk_size = 32
+        self.out_size = 2
+        self.chunk_size = self.out_size
 
 class EchoCancellationNet(BasicNet):
     def __init__(self, config = EchoCancellationConfig()):
@@ -77,7 +77,7 @@ echo_levels = [0.2, 0.4, 0.65]
 echo_delays = [0.2, 0.5, 0.7]
 with tf.Session() as sess:
     saver.restore_session(sess, False)
-    echoed, original = dataset.get_batch(dataset.test, 0, 1, False)
+    echoed, original = dataset.get_batch(dataset.val, 0, 1, False)
     result = sess.run(network_base.get_runner().img, feed_dict={trainer.input_data: (echoed), trainer.training: False})
 
     save_wav(np.copy(original), save_folder + '/original.wav')

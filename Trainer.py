@@ -10,10 +10,42 @@ from CustomSaver import *
 from DatasetBase import *
 from tensorflow.examples.tutorials.mnist import input_data
 
+class EpochScheduler():
+    def __init__(self, start, multiplicator, epoch_step):
+        self.start = start
+        self.multiplicator = multiplicator
+        self.epoch_step = epoch_step
+        self.cur = None
+
+    def get(self, epoch, *args):
+        if (self.cur is None):
+            self.cur = self.start
+            for i in range(epoch // self.epoch_step):
+                self.cur *= self.multiplicator
+        else:
+            if (epoch % self.epoch_step == 0):
+                self.cur *= self.multiplicator
+        return self.cur
+
+class EpochListScheduler():
+    def __init__(self, start, pairs):
+        self.start = start
+        self.pairs = pairs
+        self.cur = None
+        self.cur_num = 0
+
+    def get(self, epoch, *args):
+        if (self.cur is None):
+            self.cur = self.start
+        for num, val in self.pairs:
+            if (num <= epoch and val <= self.cur):
+                self.cur = val	    
+        return self.cur
 
 class TrainerParams():
     def __init__(self, learning_rate = 0.001):
-        self.optimizer = tf.train.AdamOptimizer(learning_rate)
+        self.optimizer = tf.train.AdamOptimizer
+        self.learning_rate = learning_rate if(isinstance(learning_rate, EpochScheduler)) else EpochScheduler(learning_rate, 1.0, 100)
         self.max_epochs = 50
         self.batch_size = 500
 
@@ -81,12 +113,14 @@ class Trainer():
         self.input_data = placeholders_from_sizes(inputs_info)
         self.targets = placeholders_from_sizes(outputs_info)
         self.training = tf.placeholder(tf.bool)
+        self.learning_rate = tf.placeholder(tf.float32)
 
         self.network = network
         self.network.run(*self.input_data, training = self.training)
         self.loss = self.network.loss_function(*self.targets)
         self.acc = self.network.num_classified(*self.targets)
-        self.minimizers = self.network.get_minimizers(self.params.optimizer, self.loss)
+        optimizer = self.params.optimizer if isinstance(self.params.optimizer, tf.train.Optimizer) else self.params.optimizer(self.learning_rate)
+        self.minimizers = self.network.get_minimizers(optimizer, self.loss)
 
     def init_training(self, sess, saver, epochend = False):
         sess.run(tf.global_variables_initializer())
@@ -100,7 +134,7 @@ class Trainer():
     def run_on_dataset(self, sess, dataset, batch_size):
         total_acc = 0
         total_loss = np.zeros(len(self.loss))
-        size = len(dataset.labels)
+        size = self.dataset.get_size(dataset)
         num_batches = self.dataset.get_num_batches(dataset, batch_size)
         for i in range(0, num_batches):
             batch_images, batch_labels = self.dataset.get_batch(dataset, i, batch_size)
@@ -111,6 +145,10 @@ class Trainer():
             total_acc += cur_acc
             total_loss += np.array(cur_loss)
         return total_loss / size, total_acc / size
+
+    def update_params(self, epoch, step):
+        self.learning_rate_value = self.params.learning_rate.get(epoch, step)
+        print('Learning rate value: %.6f ' % self.learning_rate_value)
 
     def train(self, saver = None, augmentation = lambda *x: x, restore_from_epochend = False):
         dataset = self.dataset
@@ -127,37 +165,44 @@ class Trainer():
             num_batches = dataset.get_num_batches(train_dataset, batch_size)
 
             while(self.cur_epoch < self.params.max_epochs):
+                self.update_params(self.cur_epoch, self.step_num)
                 self.cur_epoch += 1
                 start_step = self.step_num % num_batches
                 for i in range(start_step, num_batches):
-                    batch_images, batch_labels = dataset.get_batch(train_dataset, i, batch_size)
+                    batch_images, batch_labels = dataset.get_batch(train_dataset, i, batch_size, True)
                     inputs = sess.run(augmentation(*self.input_data), feed_dict={self.input_data: batch_images})
                     #writer = tf.summary.FileWriter("./tmp/log/smth.log", sess.graph)
                     losses = []
                     #for minimizer, loss in zip(minimizers, self.loss):
                     _, train_loss = sess.run((tuple(minimizers), tuple(self.loss)), feed_dict={self.input_data: inputs,
                                                                                            self.targets: batch_labels,
-                                                                                           self.training: True})
+                                                                                           self.training: True,
+                                                                                           self.learning_rate: self.learning_rate_value})
                     #    losses.append(train_loss)
                     train_loss = np.array(train_loss)
                     #writer.close()
                     self.step_num += 1
                     print('Epoch', self.cur_epoch,', step', self.step_num, '. Training loss: ' + print_losses(train_loss / batch_size))
 
-                    if (len(dataset.val.images) > 0 and self.step_num % self.params.val_check_period == 0):
-                        new_loss, new_acc = self.run_on_dataset(sess, dataset.get_dataset('val'), batch_size)
-                        if (sum(new_loss) < sum(self.cur_loss) - self.params.epsilon):
-                            self.cur_loss = new_loss
+                    if (self.params.val_check_period > 0 and self.step_num % self.params.val_check_period == 0):
+                        if (dataset.get_dataset('val') and len(dataset.get_dataset('val').images) > 0):
+                            new_loss, new_acc = self.run_on_dataset(sess, dataset.get_dataset('val'), batch_size)
+                            if (sum(new_loss) < sum(self.cur_loss) - self.params.epsilon):
+                                self.cur_loss = new_loss
+                                save_path = saver.save_session(sess, params = (self.step_num, self.cur_epoch), save_data = (self.cur_epoch - 1, print_losses(self.cur_loss), self.step_num))
+                                print('Model saved: ', save_path, 'Validation loss:', print_losses(new_loss), 'Validation accuracy:', new_acc * 100)
+                                waiting_for = 0
+                            else:
+                                waiting_for += 1
+                                print('Model not saved, previous loss:', print_losses(self.cur_loss), ', new loss:', print_losses(new_loss), 'Accuracy: ', new_acc * 100)
+                        else: # No validation dataset but val check is set - just save
                             save_path = saver.save_session(sess, params = (self.step_num, self.cur_epoch), save_data = (self.cur_epoch - 1, print_losses(self.cur_loss), self.step_num))
-                            print('Model saved: ', save_path, 'Validation loss:', print_losses(new_loss), 'Validation accuracy:', new_acc * 100)
-                            waiting_for = 0
-                        else:
-                            waiting_for += 1
-                            print('Model not saved, previous loss:', print_losses(self.cur_loss), ', new loss:', print_losses(new_loss), 'Accuracy: ', new_acc * 100)
+                            print('Model saved:', save_path)
 
-                test_loss, test_acc = self.run_on_dataset(sess, dataset.get_dataset('test'), batch_size)
-                print('Test accuracy after', self.cur_epoch, 'epoch: ', test_acc * 100, 'Test loss: ', print_losses(test_loss))
-                saver.save_session(sess, True, (self.cur_epoch), save_data = (self.cur_epoch, print_losses(test_loss), self.step_num))
+                if (dataset.get_dataset('test') and len(dataset.get_dataset('test').images) > 0):
+                    test_loss, test_acc = self.run_on_dataset(sess, dataset.get_dataset('test'), batch_size)
+                    print('Test accuracy after', self.cur_epoch, 'epoch: ', test_acc * 100, 'Test loss: ', print_losses(test_loss))
+                    saver.save_session(sess, True, (self.cur_epoch), save_data = (self.cur_epoch, print_losses(test_loss), self.step_num))
                 if (waiting_for > self.params.threshold and self.params.early_stopping):
                     print('Loss didn\'t improve for %d checks' % self.params.threshold)
                     break

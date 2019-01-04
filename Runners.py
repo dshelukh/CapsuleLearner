@@ -14,17 +14,34 @@ class BasicRunner():
 
     # Common losses
 
-    def get_reconstruction_loss(self, images, reconstructed):
-        axis = list(range(1, len(list(images.shape))))
-        return tf.reduce_sum(tf.reduce_mean(tf.abs(images - reconstructed), axis = axis))
+    def mean_squared_loss(self, targets, outputs):
+        axis = list(range(1, len(list(targets.shape))))
+        return tf.reduce_mean(tf.square(targets - outputs), axis = axis)
 
-    def get_softmax_loss(self, targets, predictions, labels_mask = None):
-        loss = tf.reduce_sum(tf.nn.softmax_cross_entropy_with_logits(labels = targets, logits = predictions), axis = -1)
-        num = tf.shape(targets)[0]
+    def get_reconstruction_loss(self, images, reconstructed):
+        return self.mean_squared_loss(images, reconstructed)
+
+    def get_loss_with_mask(self, loss, labels_mask = None):
+        num = tf.shape(loss)[0]
+        total = num
         if labels_mask is not None:
             loss = labels_mask * loss
             num = tf.reduce_sum(labels_mask)
-        return tf.reduce_sum(loss) / num
+        return tf.cast(total, tf.float32) * tf.reduce_sum(loss) / (num + 1e-6)
+
+    def get_softmax_loss(self, targets, predictions, labels_mask = None):
+        loss = tf.reduce_sum(tf.nn.softmax_cross_entropy_with_logits(labels = targets, logits = predictions), axis = -1)
+        return self.get_loss_with_mask(loss, labels_mask)
+
+    def get_margin_loss(self, loss_config, targets, outputs, targets_mask):
+        m_plus = loss_config.margin_m_plus
+        m_minus = loss_config.margin_m_minus
+
+        margin_loss = targets * tf.square(m_plus - outputs)
+        margin_loss += loss_config.margin_lambda * (1.0 - targets) * tf.square(outputs - m_minus)
+        loss = tf.reduce_sum(margin_loss, axis = 1)
+
+        return self.get_loss_with_mask(loss, targets_mask)
 
     # End common losses
 
@@ -35,7 +52,9 @@ class BasicRunner():
         pass
 
     def get_minimizers(self, optimizer, loss):
-        return [optimizer.minimize(l) for l in loss]
+        print('Default minimizers are used!', tf.get_collection(tf.GraphKeys.UPDATE_OPS))
+        with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
+            return [optimizer.minimize(l) for l in loss]
 
 # Class to use as a runner for GAN and SemiSupervised modes
 class GanRunner(BasicRunner):
@@ -52,12 +71,13 @@ class GanRunner(BasicRunner):
         self.generated = elements_dict['generator'].run(config, code, False, training)
 
         # combine generated images with real ones and run classificator
-        images = tf.concat((inputs, tf.tanh(self.generated)), axis = 0)
+        print('Generated shape:', self.generated.shape)
         sizes = [tf.shape(inputs)[0], tf.shape(self.generated)[0]]
-        self.codes = elements_dict['encoder'].run(config, images, False, training)
+        self.inputs_code = elements_dict['encoder'].run(config, inputs, False, training)
+        self.gen_code = elements_dict['encoder'].run(config, self.generated, True, False)#tanh
+        self.codes = tf.concat((self.inputs_code, self.gen_code), axis = 0)
         if self.semi_supervised:
             self.pred_real, self.pred_fake = tf.split(elements_dict['predictor'].run(config, self.codes), sizes)
-        self.inputs_code, self.gen_code = tf.split(self.codes, sizes)
 
         # extract features and add minibatch features (if needed)
         features = elements_dict['extractor'].run(config, self.codes)
@@ -81,21 +101,19 @@ class GanRunner(BasicRunner):
         return l1norm(tf.reduce_mean(real, 0) - tf.reduce_mean(fake, 0))# / num_features
 
     def get_loss_on_targets(self, loss_config, targets, outputs, targets_mask):
-        m_plus = loss_config.margin_m_plus
-        m_minus = loss_config.margin_m_minus
+        return self.get_margin_loss(loss_config, targets, outputs, targets_mask)
 
-        margin_loss = targets * tf.square(m_plus - outputs)
-        margin_loss += loss_config.margin_lambda * (1.0 - targets) * tf.square(outputs - m_minus)
-        loss = targets_mask * tf.reduce_sum(margin_loss, axis = 1)
-
-        return (tf.to_float(tf.shape(targets)[0]) * tf.reduce_sum(loss)) / (tf.reduce_sum(targets_mask) + 1e-6)
+    def get_mean_squared_loss_on_targets(self, loss_config, targets, outputs, targets_mask):
+        loss = self.mean_squared_loss(targets, outputs)
+        print('Loss shape', loss.shape, targets_mask.shape)
+        return self.get_loss_with_mask(loss, targets_mask)
 
     def get_fake_detection_loss(self, loss_config, labels, logits):
         smooth = loss_config.label_smoothing
         loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = smooth * labels, logits = logits)
         return tf.reduce_sum(loss)
 
-    def loss_function(self, config, targets, images):
+    def loss_function(self, config, targets, labels_info = None, images = None):
         lconfig = config.loss_config
 
         orig_detection_loss = self.get_fake_detection_loss(lconfig, labels = tf.ones_like(self.orig), logits = self.orig)
@@ -111,12 +129,17 @@ class GanRunner(BasicRunner):
         additional_losses = (orig_detection_loss, fake_detection_loss)
 
         if (self.semi_supervised):
-            loss_on_targets = self.get_loss_on_targets(lconfig, targets, self.pred_real, tf.reduce_sum(targets, axis = -1))
-            loss_on_gen = self.get_loss_on_targets(lconfig, self.code_labels, self.pred_fake, tf.ones([tf.shape(self.code_labels)[0]], dtype = tf.float32))
+            loss_func = self.get_loss_on_targets if lconfig.classification else self.get_mean_squared_loss_on_targets
+            loss_on_targets = loss_func(lconfig, targets, self.pred_real, labels_info)
+            d_loss += 30.0 * loss_on_targets
+            additional_losses += (loss_on_targets,)
 
-            d_loss += lconfig.gen_classify_coef_d * loss_on_gen + loss_on_targets
-            g_loss += lconfig.gen_classify_coef_g * loss_on_gen
-            additional_losses += (loss_on_targets, loss_on_gen)
+            if lconfig.loss_on_gen:
+                loss_on_gen = loss_func(lconfig, self.code_labels, self.pred_fake, tf.ones([tf.shape(self.code_labels)[0]], dtype = tf.float32))
+
+                d_loss += lconfig.gen_classify_coef_d * loss_on_gen
+                g_loss += lconfig.gen_classify_coef_g * loss_on_gen
+                additional_losses += (loss_on_gen,)
 
         if (config.with_reconstruction):
             reconstruction_loss = self.get_reconstruction_loss(images, self.reconstructed)
@@ -180,7 +203,108 @@ class AERunner(BasicRunner):
             return tf.constant(0)
 
     def get_minimizers(self, optimizer, loss):
-        minimizer = optimizer.minimize(loss[0])
+        with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
+            minimizer = optimizer.minimize(loss[0])
         return [minimizer]
 
+
+# Runner for classification tasks
+
+class ClassificationRunner(BasicRunner):
+    def __init__(self):
+        pass
+
+    def run(self, config, elements_dict, inputs, training):
+        print(inputs.shape)
+        self.codes = elements_dict['encoder'].run(config, inputs, False, training)
+        self.predictions = [elements_dict['predictor'].run(config, code) for code in self.codes]
+        #self.doubt = [tf.layers.dense(code, 1, activation = tf.sigmoid) for code in self.codes]
+        #self.doubt = tf.squeeze(self.doubt[-1], -1)
+
+        if config.with_reconstruction:
+            self.reconstructed = elements_dict['generator'].run(config, self.codes, True, training)
+
+    def loss_function(self, config, targets, images = None):
+        print(targets.shape)
+        labels_mask = tf.reduce_sum(targets, axis = -1)
+        #print(self.predictions.shape)
+        #classification_loss = self.get_margin_loss(config.loss_config, targets, self.predictions[0], labels_mask)
+        entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels = targets, logits = self.codes[0])#self.get_margin_loss(config.loss_config, targets, self.codes[0], tf.reduce_sum(targets, axis = -1))#tf.nn.softmax_cross_entropy_with_logits_v2(labels = targets, logits = self.codes[0])
+        #coef = tf.stop_gradient(tf.reduce_mean(entropy, axis = -1))
+        #entropy = (1.0 - self.doubt) * entropy + coef * self.doubt
+        classification_loss = tf.reduce_sum(entropy, axis = -1)
+        reconstruction_loss = 0
+        if config.with_reconstruction:
+            reconstruction_loss = self.get_reconstruction_loss(images, self.reconstructed)
+        reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+        #for rl in reg_losses:
+        #    print('Reg loss:', rl)
+        retVal = classification_loss
+
+        if reg_losses:
+            reg_loss = tf.add_n(reg_losses)#tf.Print(, [reg_losses], message = 'losses', summarize = 100)
+            retVal = [retVal + reg_loss, retVal, reg_loss]
+        else:
+            print('No regularization found')
+        
+        return retVal# + config.loss_config.reconstruction_coef * reconstruction_loss + reg_constant * sum(reg_losses)
+
+    def num_classified(self, config, targets, images = None):
+        labels_mask = tf.reduce_sum(targets, axis = -1)
+        classified = tf.equal(tf.argmax(self.predictions[-1], axis = -1), tf.argmax(targets, axis = -1))
+        return tf.reduce_sum(tf.cast(classified, tf.float32) * labels_mask)
+
+    def get_minimizers(self, optimizer, loss):
+        updates = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+        print(updates)
+        #all_vars = tf.trainable_variables()
+        #for v in all_vars:
+        #    print(v)
+        
+        with tf.control_dependencies(updates):
+            return [optimizer.minimize(loss[0])]
+    '''
+    def get_minimizers(self, optimizer, loss):
+        with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
+            minimizers = []
+            all_vars = tf.trainable_variables()
+            print(all_vars)
+            for i, l in enumerate(loss):
+                vars = [v for v in all_vars if v.name.startswith('encoder/convLayout%d' % i)]
+                print('Vars:', vars)
+                minimizers.append(optimizer.minimize(l, var_list = vars))
+        return minimizers
+    '''
+   
+   
+
+
+
+class RegressionRunner(BasicRunner):
+    def __init__(self):
+        pass
+
+    def run(self, config, elements_dict, inputs, training):
+        self.codes = elements_dict['encoder'].run(config, inputs, False, training)
+        self.predictions = elements_dict['predictor'].run(config, self.codes)
+        self.pred_real = self.predictions
+        #self.doubt = [tf.layers.dense(code, 1, activation = tf.sigmoid) for code in self.codes]
+        #self.doubt = tf.squeeze(self.doubt[-1], -1)
+
+    def loss_function(self, config, targets, images = None):
+        print(targets.shape, self.predictions.shape)
+        regression_loss = tf.reduce_sum(self.mean_squared_loss(targets, self.predictions))
+        #regression_loss = tf.Print(regression_loss, [self.predictions[0], targets])
+        reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+        reg_constant = 0.00007  # Choose an appropriate one.
+        return regression_loss + reg_constant * tf.reduce_sum(reg_losses), regression_loss, reg_constant * tf.reduce_sum(reg_losses)
+
+    def num_classified(self, config, targets, images = None):
+        #labels_mask = tf.reduce_sum(targets, axis = -1)
+        #classified = tf.equal(tf.argmax(self.predictions[-1], axis = -1), tf.argmax(targets, axis = -1))
+        return tf.reduce_sum(0.0)
+
+    def get_minimizers(self, optimizer, loss):
+        with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
+            return [optimizer.minimize(loss[0])]
 

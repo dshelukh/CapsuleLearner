@@ -42,5 +42,5 @@ class CapsLayer():
             # update b
             # v has shape [batch_size x output_capsule_len x num_outputs] , u_hats_split: [input_caps_num x <shape of v>]
             # is there a better way to do dot product?
-            b = tf.add(b, tf.reduce_sum(tf.multiply(u_hats_split, v), axis = 2, keep_dims=True))
+            b = tf.add(b, tf.reduce_sum(tf.multiply(u_hats_split, v), axis = 2, keepdims=True))
         return tf.transpose(v, [0, 2, 1])

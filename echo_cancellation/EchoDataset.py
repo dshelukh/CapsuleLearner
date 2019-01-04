@@ -11,6 +11,7 @@ from os.path import isfile, join
 
 from Trainer import *
 import numpy as np
+from scipy import signal
 
 MAX_ABS_SHORT = 32768
 
@@ -71,19 +72,37 @@ class EchoCancellationDataset(Dataset):
                 nframes = wave_file.getnframes()
                 orig = np.frombuffer(wave_file.readframes(nframes), dtype = np.short)
                 if nframes < self.sample_len:
+                    startfrom = 0
                     sized = np.pad(orig, (self.sample_len - nframes, 0), mode = 'constant')
                 else:
                     startfrom = np.random.randint(nframes - self.sample_len + 1)
                     sized = orig[startfrom:startfrom + self.sample_len]
                 result = sized.astype(np.float32) / MAX_ABS_SHORT
                 echoed, time, level, echo = self.add_echo(result)
+                echo_start = startfrom + int(time * self.framerate)
                 #print(time, level)
-                X.append(echoed)
-                y.append(result) #[time, level])
+                f, times, Zxx = signal.stft(echoed)
+                X.append(echoed) #np.rollaxis(np.abs(Zxx)**2, axis = -1).astype(np.float32))
+                y.append(result) #[[1.0, level] if t >= echo_start else [0.0, 0.0] for t in times])
         # make 3D numpy arrays
+        #f, t, Zxx = signal.stft(X)
+        #print(f)
+        #print('')
+        #print(t)
+        #print('')
+        #print((np.abs(Zxx)**2).shape)
+        #X = np.rollaxis(np.abs(Zxx)**2, axis = -1, start = 1).astype(np.float32)
+        
         X = np.reshape(X, [-1, self.sample_len // self.step_size, self.step_size])
         y = np.reshape(y, [-1, self.sample_len // self.step_size, self.step_size])
-        return X, y
+        
+        #fft = np.fft.rfft(X, axis = -1)
+        #X = np.concatenate((np.abs(fft), np.angle(fft)), axis = -1).astype(np.float32)
+        #fft = np.fft.rfft(y, axis = -1)
+        #y = np.concatenate((np.abs(fft), np.angle(fft)), axis = -1).astype(np.float32)
+        abs_logits = np.abs(X)
+        #print(np.mean(np.abs(y)))
+        return np.array(X), np.array(y)
 
 class EchoDataset(DownloadableDataset):
     def __init__(self, train_split = 0.75, val_split = 0.1, data_dir = 'data/'):
@@ -123,7 +142,7 @@ def save_wav(sound, name):
         wave_out.writeframes((np.squeeze(sound) * MAX_ABS_SHORT).astype(np.short))
 
 if __name__ == "__main__":
-    dataset = EchoDataset().get_dataset_for_trainer()
+    dataset = EchoDataset().get_dataset_for_trainer(step_size = 160)
     X, y = dataset.get_batch(dataset.val, 0, 1, False)
     print(X[0].shape, y.shape)
     

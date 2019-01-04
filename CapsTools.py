@@ -36,7 +36,7 @@ def l1norm(arr, axis = -1):
     return tf.reduce_sum(tf.abs(arr), axis = axis)
 
 def l2_squared_norm(arr, axis = -1, keep_dims = False):
-    return tf.reduce_sum(tf.square(arr), axis = axis, keep_dims = keep_dims)
+    return tf.reduce_sum(tf.square(arr), axis = axis, keepdims = keep_dims)
 
 def norm(arr, axis = -1, keep_dims = False):
     return tf.sqrt(l2_squared_norm(arr, axis, keep_dims))
