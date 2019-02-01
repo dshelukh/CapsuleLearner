@@ -4,66 +4,20 @@
 
 import sys
 sys.path.insert(0, '../')
-from SvhnDataset import SvhnDataset
-from CifarDataset import Cifar10Dataset
+from common.dataset.SvhnDataset import SvhnDataset
+from common.dataset.CifarDataset import Cifar10Dataset
 
 
 from os import listdir
 from os.path import isfile, join
 
-from Trainer import *
+from common.Trainer import *
+from common.elements.Elements import *
+from common.network.NetworkBase import *
+from Runners import *
+
 import numpy as np
-from SemiSupervisedNet import *
 import gc
-
-class SimpleDataset(Dataset):
-    def __init__(self, *args, num = 2, num_labels = 16, batch_num = 20):
-        Dataset.__init__(self, ({}, {}, {}), *args)
-        self.num = num
-        self.num_labels = num_labels
-        self.batch_num = batch_num
-        self.corner_mean = 0.9
-        self.corner_std = 0.05
-        self.other_mean = 0.3
-        self.other_std = 0.15
-
-    def onehot_y(self, data):
-        one_hotter = np.eye(self.num_labels)
-        return one_hotter[np.reshape(data - 1, [-1])]
-
-    def get_batch(self, dataset, num, batch_size, shuffle = True):
-        X = []
-        y = []
-        for i in range(batch_size):
-            example = []
-            result = 0
-            d = 0
-            om, cm = self.other_mean, self.corner_mean
-            if (np.random.rand() < 0.5):
-                om, cm = cm, om
-            for j in range(self.num):
-                row = []
-                for k in range(self.num):
-                    val = np.random.normal(om, self.other_std)
-                    if (j == 0 or j == self.num - 1) and (k == 0 or k == self.num - 1):
-                        if (np.random.random() > 0.5):
-                            val = np.random.normal(cm, self.corner_std)
-                            result += 2 ** d
-                        d += 1
-                    row.append([val])
-                example.append(row)
-            X.append(example)
-            y.append(result)
-        return np.array(X), self.onehot_y(np.array(y))
-
-    def get_num_batches(self, _, batch_size):
-        return self.batch_num
-
-    def get_dataset(self, name):
-        return []
-
-    def get_size(self, dataset):
-        return self.batch_num * 1000 # batch_size
 
 class SimpleLossConfig():
     def __init__(self):
@@ -90,7 +44,7 @@ def BasicResBlock(num_features, first_stride = 1, batch_norm = BatchNormElement,
 class SimpleNetworkConfig():
     def __init__(self, num_outputs = 10):
         self.num_outputs = num_outputs
-        self.conv_element = WeirdConvBlockElement
+        self.conv_element = ConvBlockElement
         self.dense_element = DenseElement
         self.batch_norm = BatchRenormElement
         self.dropout = 0.3
@@ -99,16 +53,18 @@ class SimpleNetworkConfig():
         self.scale = 4
         
         
-        self.save_name = 'save_weirdcapsnet_cifar10_0.1'
+        self.save_name = 'save_convs'
         self.convs = ConvLayout([
-            CleverDenseElement(1024, dropin = 0.15),
-            ReshapeBlock([32, 32, 1])
-#            ConvData(16, (3, 3), 1, element = self.conv_element),#WeirdConvBlockElement_),
-#            BatchNormBlock(element = self.batch_norm),
-#            ActivationBlock(tf.nn.relu),
+            #ReshapeBlock([3072]),
+            #DenseBlockElement(1024),
+            #CleverDenseElement(1024, dropin = 0.01, decay = 0.999),
+            #ReshapeBlock([32, 32, 1])
+            ConvData(16, (3, 3), 1, element = self.conv_element),#WeirdConvBlockElement_),
+            BatchNormBlock(element = self.batch_norm),
+            ActivationBlock(tf.nn.relu),
             #PreliminaryResultElement(self.num_outputs, 0.35, False, self.dense_element),
 
-#            BasicResBlock(16 * self.scale, 1, dropout = self.dropout, element = self.conv_element, adjust_input=True, start_with_activation = False),
+            BasicResBlock(16 * self.scale, 1, dropout = self.dropout, element = self.conv_element, adjust_input=True, start_with_activation = False),
 #            BasicResBlock(16 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
 #            BasicResBlock(16 * self.scale, 1, dropout = self.dropout, element = self.conv_element),
 #            BatchNormBlock(element = self.batch_norm),
@@ -128,7 +84,7 @@ class SimpleNetworkConfig():
 #            BatchNormBlock(element = self.batch_norm),
 #            ActivationBlock(tf.nn.relu),
 
-            #FinalizingElement(self.num_outputs, True, self.dense_element)
+            FinalizingElement(self.num_outputs, True, self.dense_element)
             ], batch_norm = EmptyElement())
         
         self.dense_g = [
@@ -189,20 +145,11 @@ class SimpleNetwork(BasicNet):
             }
         element_dict = {
             'encoder': ConvEncoder(config.convs, DenseElement), #CapsEncoder(),#ConvEncoder(),
-            'predictor': DenseCalcAndPredict(), #DensePredict()#CapsPredict()#EmptyElementConfig()
+            'predictor': EmptyElementConfig(),#DensePredict(),#CapsPredict(),#EmptyElementConfig(),
             'generator': DenseEncoder(config.dense_g, 'generator'), #CapsEncoder(),#ConvEncoder(),
             }
         super(SimpleNetwork, self).__init__(modes_dict, 'classification', element_dict, config = config)
 
-
-
-def augment_data(data, max_translate = (4, 4)):
-    mtx, mty = max_translate
-    N = tf.shape(data)[0]
-    transform_mat = tf.concat([tf.ones([N, 1]), tf.zeros([N, 1]), tf.random_uniform([N, 1], minval = -mtx, maxval = mtx),
-                               tf.zeros([N, 1]), tf.ones([N, 1]), tf.random_uniform([N, 1], minval = -mty, maxval = mty),
-                               tf.zeros([N, 1]), tf.zeros([N, 1])], 1)
-    return tf.contrib.image.transform(data, transform_mat)
 
 class CappedOptimizer():
     def __init__(self, x):
@@ -218,7 +165,10 @@ class CappedOptimizer():
 config = SimpleNetworkConfig()
 #dataset = SvhnDataset(val_split=0.0, feature_range = (0, 1), with_extra = False).get_dataset_for_trainer(with_reconstruction = config.with_reconstruction)
 #dataset = SimpleDataset(num = 3, num_labels = config.num_outputs)
-dataset = Cifar10Dataset().get_dataset_for_trainer(with_reconstruction = config.with_reconstruction)
+dataset = (
+    SvhnDataset()
+    .get_dataset_for_trainer(with_reconstruction = config.with_reconstruction)
+    )
 gc.collect()
 
 

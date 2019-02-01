@@ -1,12 +1,13 @@
 '''
 @author: Dmitry
 '''
+from common.tools.CapsTools import *
 
-from CapsTools import *
 import os
 import urllib.request
 import zipfile
 import tarfile
+import numpy as np
 
 class DatasetBase():
     def __init__(self, images, labels, is_labeled = None):
@@ -67,7 +68,7 @@ class Dataset(AbstractDataset):
     def get_batch_position(self, num, batch_size):
         return batch_size * num, batch_size * (num + 1)
 
-    def get_batch(self, dataset, num, batch_size):
+    def get_batch(self, dataset, num, batch_size, training = True):
         start, end = self.get_batch_position(num, batch_size)
         return dataset.images[start:end], dataset.labels[start:end]
 

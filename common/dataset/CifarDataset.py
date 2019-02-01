@@ -1,7 +1,7 @@
 '''
 @author: Dmitry
 '''
-from DatasetBase import *
+from common.dataset.DatasetBase import *
 
 import pickle as pkl
 import tarfile

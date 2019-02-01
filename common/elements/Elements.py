@@ -3,7 +3,7 @@
 '''
 import tensorflow as tf
 
-from CapsTools import *
+from common.tools.CapsTools import *
 from CapsuleLayer import *
 
 class RunElement():
@@ -406,19 +406,26 @@ class LongConvBlockElement(ConvBlockElement):
         return cur
 
 class CleverDenseElement(RunElement):
-    def __init__(self, num_outputs, dropin = 0.05, threshold = 0.8, decay = 0.97, regularizer = None):
+    def __init__(self, num_outputs, dropin = 0.05, threshold = 0.8, decay = 0.99, regularizer = None):
         self.regularizer = regularizer
         self.num_outputs = num_outputs
         self.threshold = threshold
         self.dropin = dropin
         self.decay = decay
+        self.inputs = None
+        self.outputs = None
 
-    def training_step(self, inputs, outputs):
-        #in training do dropin first
+    def add_dropin(self, outputs):
         randoms = tf.random_uniform(tf.shape(outputs))
         dropins_mask = tf.less(randoms, self.dropin)
         #dropins_mask = tf.Print(dropins_mask, [tf.reduce_sum(tf.cast(dropins_mask, tf.float32))], message = 'Dropin cells:')
         outputs = outputs + self.threshold * tf.cast(dropins_mask, tf.float32)
+        return outputs
+
+    def training_step(self, results = None):
+        inputs = self.inputs
+        outputs = self.outputs * tf.expand_dims(tf.cast(results, tf.float32), axis = -1)
+        print('Results shape:', outputs.shape)
 
         # actual training
         out_transposed = tf.transpose(outputs)
@@ -431,32 +438,60 @@ class CleverDenseElement(RunElement):
         inputs_mask = tf.greater(inputs, 0.0)
         inputs_mask_neg = tf.logical_not(inputs_mask)
         inputs_activation = tf.cast(inputs_mask, tf.float32) - tf.cast(inputs_mask_neg, tf.float32)
-        correlations = tf.transpose(tf.matmul(activation_matrix, inputs_activation)) / tf.reduce_sum(activation_matrix, axis = 1)
+        correlations = tf.transpose(tf.matmul(activation_matrix, inputs_activation)) / (tf.reduce_sum(activation_matrix, axis = 1) + 1.0)
 
         # update weights
-        update = tf.assign(self.weights, self.weights * self.decay + (1.0 - self.decay) * correlations)
+        update = tf.assign(self.weights, self.weights + (1.0 - self.decay) * correlations)
         update = tf.Print(update, [correlations[0]], message = 'First input correlations:')
         tf.add_to_collection(tf.GraphKeys.UPDATE_OPS, update)
         return outputs
 
+    def save_train_info(self, inputs, outputs):
+        self.inputs = inputs
+        self.outputs = outputs
+
     def build(self, input, dropout = 0.0, training = True, name = 'clever_dense', regularizer = None):
         with tf.variable_scope(name, reuse = tf.AUTO_REUSE):
             inputs = tf.layers.flatten(input)
-            print('Clever dense inputs shape flattened:', inputs.shape)
-            self.weights = tf.get_variable('weights', [inputs.shape[1], self.num_outputs], trainable = False)
+            #print('Clever dense inputs shape flattened:', inputs.shape)
+            self.weights = tf.get_variable('weights', [inputs.shape[1], self.num_outputs], trainable = False, initializer=tf.zeros_initializer)
             # outputs as in normal dense without bias
             outputs = tf.matmul(inputs, self.weights)
             # remove small activations
             masked = tf.greater(outputs, self.threshold)
-            print('Clever dense mask shape:', masked.shape)
-            masked = tf.Print(masked, [tf.shape(outputs)[1], tf.shape(outputs)[0]], message = 'Total cells and number of images:')
+            #print('Clever dense mask shape:', masked.shape)
+            #masked = tf.Print(masked, [tf.shape(outputs)[1], tf.shape(outputs)[0]], message = 'Total cells and number of images:')
             masked = tf.Print(masked, [tf.reduce_sum(tf.cast(masked, tf.float32))], message = 'Activated cells:')
             outputs = outputs * tf.cast(masked, tf.float32)
-            print('Clever dense outputs shape after mask:', outputs.shape)
-            result = tf.cond(training, lambda: self.training_step(inputs, outputs), lambda: outputs)
-            print('Clever dense result shape after cond:', result.shape)
+            result = tf.cond(training, lambda: self.add_dropin(outputs), lambda: outputs)
+            self.save_train_info(inputs, result)
+            # training step should be done somewhere!!!
+            #print('Clever dense result shape after cond:', result.shape)
             result = tf.maximum(tf.minimum(result, 1.0), 0.0)
             result = tf.Print(result, [self.weights[0]], message = 'First input cell weights:')
+        return result
+
+class ContextDenseElement():
+    def __init__(self, context_size = 16, return_context = True, activation = tf.sigmoid):
+        self.context_size = context_size
+        self.return_context = return_context
+        self.activation = activation
+
+    def build(self, input, dropout = 0.0, training = True, name = 'context_dense', regularizer = None):
+        data, prev_context = input if isinstance(input, tuple) else (input, tf.zeros([tf.shape(input)[0], self.context_size]))
+        context = tf.layers.dense(tf.concat((data, prev_context), axis = 1), self.context_size, activation = self.activation, kernel_regularizer=regularizer)
+        output = tf.layers.dense(context, data.shape[1], activation = self.activation, kernel_regularizer=regularizer)
+        output = output + data
+        return (output, context + prev_context) if self.return_context else output
+
+class DenseBlockElement():
+    def __init__(self, num_outputs, activation = tf.sigmoid):
+        self.num_outputs = num_outputs
+        self.activation = activation
+
+    def build(self, input, dropout = 0.0, training = True, name = 'dense', regularizer = None):
+        with tf.variable_scope(name, reuse = tf.AUTO_REUSE):
+            result = tf.layers.dense(input, self.num_outputs, activation = self.activation, kernel_regularizer = regularizer)
         return result
 
 class ConvData():

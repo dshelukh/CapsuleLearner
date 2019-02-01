@@ -8,8 +8,8 @@ import matplotlib.pyplot as plt
 
 from SimpleCapsNet import *
 from CustomSaver import *
-from DatasetBase import *
-from tensorflow.examples.tutorials.mnist import input_data
+from common.dataset.DatasetBase import Dataset
+
 
 class EpochScheduler():
     def __init__(self, start, multiplicator, epoch_step):
@@ -218,6 +218,7 @@ def augment_data(data, max_translate = (2, 2)):
     return tf.contrib.image.transform(data, transform_mat)
 
 if __name__ == "__main__":
+    from tensorflow.examples.tutorials.mnist import input_data
     #from SvhnDataset import *
     #dataset = SvhnDataset(0.4, feature_range = (0, 1)).get_dataset_for_trainer(False)
     

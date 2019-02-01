@@ -3,7 +3,7 @@
 '''
 import numpy as np
 import tensorflow as tf
-from CapsTools import *
+from common.tools.CapsTools import *
 from CapsuleLayer import *
 
 class LossConfig():

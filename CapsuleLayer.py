@@ -2,7 +2,7 @@
 @author: Dmitry
 '''
 import tensorflow as tf
-from CapsTools import *
+from common.tools.CapsTools import *
 
 #TODO: should be convolution, not FC!
 class CapsLayer():

@@ -1,7 +1,7 @@
 '''
 @author: Dmitry
 '''
-from DatasetBase import *
+from common.dataset.DatasetBase import *
 
 import pickle as pkl
 import time
@@ -26,7 +26,7 @@ class SvhnPreprocessor():
         one_hotter = np.eye(self.num_labels)
         return one_hotter[np.reshape(data - 1, [-1])]
 
-    def preprocess(self, imgs, labels):
+    def preprocess(self, imgs, labels, augmentation = False):
         if imgs.size > 0 and labels.size > 0:
             labels = self.onehot_y(labels)
             imgs = self.preprocess_X(imgs)

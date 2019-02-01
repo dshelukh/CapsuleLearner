@@ -2,8 +2,8 @@
 @author: Dmitry
 '''
 
-from Elements import *
-from CapsTools import *
+from common.elements.Elements import *
+from common.tools.CapsTools import *
 
 class BasicRunner():
     def __init__(self):
@@ -220,8 +220,9 @@ class ClassificationRunner(BasicRunner):
         #caps1 = squash(reshapeToCapsules(tf.transpose(self.codes[0], [0, 3, 1, 2]), config.caps1_len, axis = 1))
         #caps_layer = CapsLayer(caps1, config.num_outputs, config.caps2_len)
         #caps2 = caps_layer.do_dynamic_routing()
-        flattened = tf.reduce_mean(self.codes[0], axis = [1, 2])
+        flattened = self.codes[0]#tf.reduce_mean(self.codes[0], axis = [1, 2])
         self.predictions = [elements_dict['predictor'].run(config, code) for code in [flattened]]
+        print('Predictions', self.predictions[0].shape)
         #self.doubt = [tf.layers.dense(code, 1, activation = tf.sigmoid) for code in self.codes]
         #self.doubt = tf.squeeze(self.doubt[-1], -1)
         #encoded = tf.contrib.layers.flatten(tf.multiply(caps2, maskForMaxCapsule(self.predictions[0])))
@@ -235,6 +236,7 @@ class ClassificationRunner(BasicRunner):
         labels_mask = tf.reduce_sum(targets, axis = -1)
         #print(self.predictions.shape)
         #classification_loss = self.get_margin_loss(config.loss_config, targets, self.predictions[0], labels_mask)
+        #config.convs.convs[0].training_step(tf.equal(tf.argmax(self.predictions[-1], axis = -1), tf.argmax(targets, axis = -1)))
         entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels = targets, logits = self.predictions[0])#self.get_margin_loss(config.loss_config, targets, self.codes[0], tf.reduce_sum(targets, axis = -1))#tf.nn.softmax_cross_entropy_with_logits_v2(labels = targets, logits = self.codes[0])
         #coef = tf.stop_gradient(tf.reduce_mean(entropy, axis = -1))
         #entropy = (1.0 - self.doubt) * entropy + coef * self.doubt
