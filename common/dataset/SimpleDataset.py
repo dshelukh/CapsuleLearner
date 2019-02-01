@@ -5,12 +5,13 @@ import numpy as np
 from common.dataset.DatasetBase import *
 
 # A random square. Target value depends on corners
+simple_dataset_num_labels = 16
 
 class SimpleDataset(Dataset):
     def __init__(self, *args, num = 2, size = 20000):
         Dataset.__init__(self, ({}, {}, {}), *args)
         self.num = num
-        self.num_labels = 16
+        self.num_labels = simple_dataset_num_labels
         self.size = size
         self.corner_mean = 0.9
         self.corner_std = 0.05
@@ -21,7 +22,7 @@ class SimpleDataset(Dataset):
         one_hotter = np.eye(self.num_labels)
         return one_hotter[np.reshape(data - 1, [-1])]
 
-    def get_batch(self, dataset, num, batch_size, shuffle = True):
+    def get_batch(self, dataset, num, batch_size, *args, **kwargs):
         X = []
         y = []
         for i in range(batch_size):
@@ -50,7 +51,7 @@ class SimpleDataset(Dataset):
         return self.size // batch_size if self.size % batch_size == 0 else self.size // batch_size + 1
 
     def get_dataset(self, name):
-        return []
+        return [None]
 
     def get_size(self, dataset):
         return self.size

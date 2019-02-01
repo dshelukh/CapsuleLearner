@@ -106,36 +106,67 @@ class Trainer():
     def __init__(self, network, dataset, params = TrainerParams()):
         self.dataset = dataset
         self.params = params
+        self.network = network
+
         self.cur_epoch = 0
         self.cur_loss = [float('inf')]
         self.step_num = 0
 
-        inputs_info, outputs_info = dataset.get_shapes()
+        self.setIOPlaceholders()
+        self.setTrainingVariables()
+
+        self.run_network()
+
+        self.trainer_output = True
+
+    # Create placeholder variables to match sizes of input and output. First dimension(batch size) should be None
+    def setIOPlaceholders(self):
+        inputs_info, outputs_info = self.dataset.get_shapes()
         self.input_data = placeholders_from_sizes(inputs_info)
         self.targets = placeholders_from_sizes(outputs_info)
+
+    # Placeholders for variables used during training. Currently it's training(bool) and learning_rate(float32)
+    def setTrainingVariables(self):
         self.training = tf.placeholder(tf.bool)
         self.learning_rate = tf.placeholder(tf.float32)
 
-        self.network = network
+    # execute network functions to obtain loss, accuracy and minimizers tensors
+    def run_network(self):
         self.network.run(*self.input_data, training = self.training)
         self.loss = self.network.loss_function(*self.targets)
         self.acc = self.network.num_classified(*self.targets)
         optimizer = self.params.optimizer if isinstance(self.params.optimizer, tf.train.Optimizer) else self.params.optimizer(self.learning_rate)
         self.minimizers = self.network.get_minimizers(optimizer, self.loss)
 
+    # executes after restoring session from file
+    def on_data_load(self):
+        if self.trainer_output:
+            print('Training state loaded:', self.cur_epoch, print_losses(self.cur_loss), self.step_num)
+
+    def set_on_data_load(self, on_data_load):
+        self.on_data_load = on_data_load
+
+    # initialize training or restore session from file
     def init_training(self, sess, saver, epochend = False):
         sess.run(tf.global_variables_initializer())
         result, data = saver.restore_session(sess, epochend)
         if result:
             if data:
                 self.cur_epoch, self.cur_loss, self.step_num = int(data[0]), np.fromstring(data[1][1:-1], sep = ' '), int(data[2])
-                print(self.cur_epoch, self.cur_loss, self.step_num)
+                self.on_data_load()
 
 
+    def on_check_batch_complete(self, loss, acc, batch_size):
+        print
+    # calculate total loss and total accuracy on dataset
     def run_on_dataset(self, sess, dataset, batch_size):
         total_acc = 0
         total_loss = np.zeros(len(self.loss))
         size = self.dataset.get_size(dataset)
+
+        if size == 0:
+            return 0.0, 0.0
+
         num_batches = self.dataset.get_num_batches(dataset, batch_size)
         for i in range(0, num_batches):
             batch_images, batch_labels = self.dataset.get_batch(dataset, i, batch_size, training = False)
@@ -171,15 +202,12 @@ class Trainer():
                 start_step = self.step_num % num_batches
                 for i in range(start_step, num_batches):
                     batch_images, batch_labels = dataset.get_batch(train_dataset, i, batch_size, True)
-                    inputs = sess.run(augmentation(*self.input_data), feed_dict={self.input_data: batch_images})
                     #writer = tf.summary.FileWriter("./tmp/log/smth.log", sess.graph)
                     losses = []
-                    #for minimizer, loss in zip(minimizers, self.loss):
-                    _, train_loss = sess.run((tuple(minimizers), tuple(self.loss)), feed_dict={self.input_data: inputs,
+                    _, train_loss = sess.run((tuple(minimizers), tuple(self.loss)), feed_dict={self.input_data: batch_images,
                                                                                            self.targets: batch_labels,
                                                                                            self.training: True,
                                                                                            self.learning_rate: self.learning_rate_value})
-                    #    losses.append(train_loss)
                     train_loss = np.array(train_loss)
                     #writer.close()
                     self.step_num += 1
@@ -200,7 +228,8 @@ class Trainer():
                             save_path = saver.save_session(sess, params = (self.step_num, self.cur_epoch), save_data = (self.cur_epoch - 1, print_losses(self.cur_loss), self.step_num))
                             print('Model saved:', save_path)
 
-                if (dataset.get_dataset('test') and len(dataset.get_dataset('test').images) > 0):
+                test_dataset = dataset.get_dataset('test')
+                if (test_dataset and dataset.get_size(test_dataset) > 0):
                     test_loss, test_acc = self.run_on_dataset(sess, dataset.get_dataset('test'), batch_size)
                     print('Test accuracy after', self.cur_epoch, 'epoch: ', test_acc * 100, 'Test loss: ', print_losses(test_loss))
                     saver.save_session(sess, True, (self.cur_epoch), save_data = (self.cur_epoch, print_losses(test_loss), self.step_num))

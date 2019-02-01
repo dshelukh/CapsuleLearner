@@ -169,8 +169,6 @@ dataset = (
     SvhnDataset()
     .get_dataset_for_trainer(with_reconstruction = config.with_reconstruction)
     )
-gc.collect()
-
 
 
 save_folder = config.save_name

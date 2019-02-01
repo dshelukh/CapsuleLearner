@@ -441,7 +441,7 @@ class CleverDenseElement(RunElement):
         correlations = tf.transpose(tf.matmul(activation_matrix, inputs_activation)) / (tf.reduce_sum(activation_matrix, axis = 1) + 1.0)
 
         # update weights
-        update = tf.assign(self.weights, self.weights + (1.0 - self.decay) * correlations)
+        update = tf.assign(self.weights, self.decay * self.weights + (1.0 - self.decay) * correlations)
         update = tf.Print(update, [correlations[0]], message = 'First input correlations:')
         tf.add_to_collection(tf.GraphKeys.UPDATE_OPS, update)
         return outputs

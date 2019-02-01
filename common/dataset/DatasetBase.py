@@ -59,11 +59,12 @@ class Dataset(AbstractDataset):
         return getattr(self, dataset_name)
 
     def get_size(self, dataset):
-        return len(dataset.images)
+        return len(dataset.images) if dataset.images else 0
 
     def get_num_batches(self, dataset, batch_size):
-        num = self.get_size(dataset) // batch_size
-        return num if len(dataset.images) % batch_size == 0 else num + 1
+        size = self.get_size(dataset)
+        num = size // batch_size
+        return num if size % batch_size == 0 else num + 1
 
     def get_batch_position(self, num, batch_size):
         return batch_size * num, batch_size * (num + 1)
