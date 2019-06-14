@@ -16,9 +16,9 @@ class SimpleTestNetworkConfig():
         self.with_reconstruction = False
         self.weight_decay = 0.0000
         self.convs = ConvLayout([
-            #CleverDenseElement(4, dropin = 0.05, decay = 0.99),
-            #ReshapeBlock([2, 2, 1]),
-            ConvData(4, (3, 3), 1, element = WeirdConvBlockElement),
+            CleverDenseElement(4, dropin = 0.05, decay = 0.99),
+            ReshapeBlock([2, 2, 1]),
+            #ConvData(4, (3, 3), 1, element = WeirdConvBlockElement),
             FinalizingElement(self.num_outputs, True, DenseElement)
             ], batch_norm = EmptyElement())
 
@@ -37,7 +37,7 @@ class SimpleTestNetwork(BasicNet):
 dataset = SimpleDataset(num = 2)
 save_folder = 'simple-test'
 params = TrainerParams(0.001)
-params.batch_size = 1000
+params.batch_size = 1
 params.val_check_period = 0
 params.max_epochs = 100
 network_base = SimpleTestNetwork()

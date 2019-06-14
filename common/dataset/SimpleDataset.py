@@ -30,8 +30,8 @@ class SimpleDataset(Dataset):
             result = 0
             d = 0
             om, cm = self.other_mean, self.corner_mean
-            if (np.random.rand() < 0.5):
-                om, cm = cm, om
+            #if (np.random.rand() < 0.5):
+            #    om, cm = cm, om
             for j in range(self.num):
                 row = []
                 for k in range(self.num):

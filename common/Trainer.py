@@ -108,6 +108,12 @@ class Trainer():
         self.params = params
         self.network = network
 
+        if (dataset is not None) and (network is not None):
+            self.resetTrainer()
+        else:
+            self.ready = False
+
+    def resetTrainer(self):
         self.cur_epoch = 0
         self.cur_loss = [float('inf')]
         self.step_num = 0
@@ -118,6 +124,13 @@ class Trainer():
         self.run_network()
 
         self.trainer_output = True
+        self.ready = True
+
+    def resetTrainerWith(self, network, dataset, params):
+        self.dataset = dataset
+        self.params = params
+        self.network = network
+        self.resetTrainer()
 
     # Create placeholder variables to match sizes of input and output. First dimension(batch size) should be None
     def setIOPlaceholders(self):
@@ -145,6 +158,13 @@ class Trainer():
 
     def set_on_data_load(self, on_data_load):
         self.on_data_load = on_data_load
+
+    # execute after finishing training
+    def on_train_complete(self):
+        print('Training is completed!')
+
+    def set_on_train_complete(self, on_train_complete):
+        self.on_train_complete = on_train_complete
 
     # initialize training or restore session from file
     def init_training(self, sess, saver, epochend = False):
@@ -183,6 +203,9 @@ class Trainer():
         print('Learning rate value: %.6f ' % self.learning_rate_value)
 
     def train(self, saver = None, augmentation = lambda *x: x, restore_from_epochend = False):
+        if not self.ready:
+            self.resetTrainer()
+
         dataset = self.dataset
         minimizers = self.minimizers
         
@@ -236,7 +259,8 @@ class Trainer():
                 if (waiting_for > self.params.threshold and self.params.early_stopping):
                     print('Loss didn\'t improve for %d checks' % self.params.threshold)
                     break
-        print('Training is completed!')
+            self.on_train_complete()
+        self.ready = False
 
 def augment_data(data, max_translate = (2, 2)):
     mtx, mty = max_translate

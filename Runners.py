@@ -275,7 +275,7 @@ class ClassificationRunner(BasicRunner):
         #    print(v)
         
         with tf.control_dependencies(updates):
-            return [optimizer.minimize(loss[0])]
+            return [optimizer.minimize(loss[0])] if tf.trainable_variables() else [loss[0]]
     '''
     def get_minimizers(self, optimizer, loss):
         with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS)):

@@ -10,8 +10,8 @@ class CustomSaver():
     checkpoint_ext = '.ckpt'
     info_ext = '.info'
 
-    def __init__(self, folders = ['tmp', 'tmp/epochend'], tmp_template = tmp_filename_template, epochend_template = epochend_filename_template):
-        self.saver = tf.train.Saver(max_to_keep = 10)
+    def __init__(self, folders = ['tmp', 'tmp/epochend'], tmp_template = tmp_filename_template, epochend_template = epochend_filename_template, allow_empty = False):
+        self.saver = tf.train.Saver(max_to_keep = 10, allow_empty = allow_empty)
         self.folders = self.get_folders(folders)
         for folder in self.folders:
             os.makedirs(folder, exist_ok = True)
