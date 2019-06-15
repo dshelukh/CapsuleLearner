@@ -43,6 +43,25 @@ class AbstractDataset():
     def get_batch(self, dataset, num, batch_size):
         raise(NotImplementedError( "Get batch is not implemented for dataset"))
 
+class AbstractDatasetDec():
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def get_shapes(self):
+        return self.dataset.get_shapes()
+
+    def get_dataset(self, dataset_name):
+        return self.dataset.get_dataset(dataset_name)
+
+    def get_size(self, dataset):
+        return self.dataset.get_size(dataset)
+
+    def get_num_batches(self, dataset, batch_size):
+        return self.dataset.get_num_batches(dataset, batch_size)
+
+    def get_batch(self, dataset, num, batch_size):
+        return self.dataset.get_batch(dataset, num, batch_size)
+
 class Dataset(AbstractDataset):
     def __init__(self, base):
         super()
@@ -96,10 +115,9 @@ class ShuffleDataset(Dataset):
         return X, y
 
 # Implements Dataset interface. Return initial images as output
-class DatasetWithReconstruction(AbstractDataset):
+class DatasetWithReconstruction(AbstractDatasetDec):
     def __init__(self, dataset, with_reconstruction = True):
-        super()
-        self.dataset = dataset
+        super().__init__(dataset)
         self.with_reconstruction = with_reconstruction
 
     def get_shapes(self):
@@ -108,20 +126,27 @@ class DatasetWithReconstruction(AbstractDataset):
             output_shapes = [*output_shapes, *input_shapes]
         return input_shapes, output_shapes
 
-    def get_dataset(self, dataset_name):
-        return self.dataset.get_dataset(dataset_name)
-
-    def get_size(self, dataset):
-        return self.dataset.get_size(dataset)
-
-    def get_num_batches(self, dataset, batch_size):
-        return self.dataset.get_num_batches(dataset, batch_size)
-
     def get_batch(self, dataset, num, batch_size, training = False):
         X, y = self.dataset.get_batch(dataset, num, batch_size, training)
 
         if self.with_reconstruction:
             y = (*y, X) if isinstance(y, tuple) else (y, X)
+        return X, y
+
+# Implements Dataset interface. Add target values as input
+class DatasetwithCombinedInput(AbstractDatasetDec):
+    def __init__(self, dataset):
+        super().__init__(dataset)
+
+    def get_shapes(self):
+        input_shapes, output_shapes = self.dataset.get_shapes()
+        input_shapes = [*input_shapes, *output_shapes]
+        return input_shapes, output_shapes
+
+    def get_batch(self, dataset, num, batch_size, training = False):
+        X, y = self.dataset.get_batch(dataset, num, batch_size, training)
+
+        X = (*X, y) if isinstance(X, tuple) else (X, y)
         return X, y
 
 # Semi-supervised dataset: some images might have no labels + mechanism to guarantee sufficient number of labeled images per batch
@@ -178,6 +203,8 @@ class LazyPrepDataset(ShuffleDataset):
         X, y = super().get_batch(dataset, num, batch_size, shuffle = training)
         X, y = self.prep.preprocess(X, y, augmentation = training)
         return X, y
+
+
 
 
 class DownloadableDataset():

@@ -145,7 +145,7 @@ class Trainer():
 
     # execute network functions to obtain loss, accuracy and minimizers tensors
     def run_network(self):
-        self.network.run(*self.input_data, training = self.training)
+        self.network.run(self.input_data, training = self.training)
         self.loss = self.network.loss_function(*self.targets)
         self.acc = self.network.num_classified(*self.targets)
         optimizer = self.params.optimizer if isinstance(self.params.optimizer, tf.train.Optimizer) else self.params.optimizer(self.learning_rate)
@@ -159,12 +159,26 @@ class Trainer():
     def set_on_data_load(self, on_data_load):
         self.on_data_load = on_data_load
 
-    # execute after finishing training
+    # executes after finishing training
     def on_train_complete(self):
         print('Training is completed!')
 
     def set_on_train_complete(self, on_train_complete):
         self.on_train_complete = on_train_complete
+
+    # executes after every training batch
+    def on_batch(self, loss):
+        print('Epoch', self.cur_epoch,', step', self.step_num, '. Training loss: ' + print_losses(loss))
+
+    def set_on_batch(self, on_batch):
+        self.on_batch = on_batch
+
+    # executes after tests are run
+    def on_test_complete(self, test_loss, test_acc):
+        print('Test accuracy after', self.cur_epoch, 'epoch: ', test_acc * 100, 'Test loss: ', print_losses(test_loss))
+
+    def set_on_test_complete(self, on_test_complete):
+        self.on_test_complete = on_test_complete
 
     # initialize training or restore session from file
     def init_training(self, sess, saver, epochend = False):
@@ -176,8 +190,6 @@ class Trainer():
                 self.on_data_load()
 
 
-    def on_check_batch_complete(self, loss, acc, batch_size):
-        print
     # calculate total loss and total accuracy on dataset
     def run_on_dataset(self, sess, dataset, batch_size):
         total_acc = 0
@@ -234,7 +246,7 @@ class Trainer():
                     train_loss = np.array(train_loss)
                     #writer.close()
                     self.step_num += 1
-                    print('Epoch', self.cur_epoch,', step', self.step_num, '. Training loss: ' + print_losses(train_loss / batch_size))
+                    self.on_batch(train_loss / batch_size)
 
                     if (self.params.val_check_period > 0 and self.step_num % self.params.val_check_period == 0):
                         if (dataset.get_dataset('val') and len(dataset.get_dataset('val').images) > 0):
@@ -254,7 +266,7 @@ class Trainer():
                 test_dataset = dataset.get_dataset('test')
                 if (test_dataset and dataset.get_size(test_dataset) > 0):
                     test_loss, test_acc = self.run_on_dataset(sess, dataset.get_dataset('test'), batch_size)
-                    print('Test accuracy after', self.cur_epoch, 'epoch: ', test_acc * 100, 'Test loss: ', print_losses(test_loss))
+                    self.on_test_complete(test_loss, test_acc)
                     saver.save_session(sess, True, (self.cur_epoch), save_data = (self.cur_epoch, print_losses(test_loss), self.step_num))
                 if (waiting_for > self.params.threshold and self.params.early_stopping):
                     print('Loss didn\'t improve for %d checks' % self.params.threshold)

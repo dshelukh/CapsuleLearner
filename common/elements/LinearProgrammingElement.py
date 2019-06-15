@@ -33,12 +33,13 @@ class LinearProgrammingDenseElement(RunElement):
 
     def build(self, inputs, dropout = 0.0, training = True, name = 'lp_dense', regularizer = None):
         X, y = inputs if isinstance(inputs, tuple) else (inputs, None)# need both input and output
+
         if y is None:
             training = False
             y = tf.zeros([tf.shape(X)[0], self.num_outputs], dtype=tf.float32)
 
         self.init_out_layer(y)
-        print(X.shape, y.shape)
+
         result = tf.map_fn(lambda x: self.step(x[0], x[1], training), (X, y), dtype=tf.float32, name = 'lp', parallel_iterations = 1)
         #with tf.variable_scope(name, reuse = tf.AUTO_REUSE):
         return result

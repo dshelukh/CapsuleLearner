@@ -149,7 +149,7 @@ class ConvLayout():
         retVal = []
         pre_vals = []
         pre_bools = []
-        out_bools = tf.range(tf.shape(input)[0])
+        out_bools = tf.range(tf.shape(input if not isinstance(input, tuple) else input[0])[0])
 
         for i, c in enumerate(self.convs):
             conv_name = name + ('_%d' % i)#name + ('_%d' % i) #name + str(i)
