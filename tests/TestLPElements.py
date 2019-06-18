@@ -52,7 +52,7 @@ class TestLPElements(unittest.TestCase):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.print_output = False
+        self.print_train_output = False
         self.trainer = None
 
     def no_output(self, f):
@@ -62,12 +62,13 @@ class TestLPElements(unittest.TestCase):
         #sys.stdout = sys.__stdout__ # restore output
 
     def control_output(self, f):
-        if not self.print_output:
+        if not self.print_train_output:
             self.no_output(f)
         else:
             f()
 
-    def run_trainer(self, network_base = LpTestNetwork()):
+    def run_trainer(self, config = LpTestNetworkConfig()):
+        network_base = LpTestNetwork(config = config)
         network = Network(network_base, *network_base.get_functions_for_trainer())
 
         self.trainer.resetTrainerWith(network, self.dataset, self.params)
@@ -109,7 +110,7 @@ class TestLPElements(unittest.TestCase):
 
     def test_step_called(self):
         config = self.get_config_with_mocked_element()
-        self.control_output(lambda: self.run_trainer(network_base = LpTestNetwork(config = config)))
+        self.control_output(lambda: self.run_trainer(config))
 
         self.assertGreaterEqual(config.convs.convs[0].step.call_count, 1, 'Step function should be called at least once')
 
@@ -129,7 +130,7 @@ class TestLPElements(unittest.TestCase):
         config = self.get_config_with_mocked_element(step_mock_acc)
 
         self.trainer.set_on_train_complete(save_num_ex)
-        self.control_output(lambda: self.run_trainer(network_base = LpTestNetwork(config = config)))
+        self.control_output(lambda: self.run_trainer(config))
 
         self.assertEqual(self.result, self.dataset_size * 2, 'Update should be executed for each training and testing example in dataset')
 
@@ -143,5 +144,31 @@ class TestLPElements(unittest.TestCase):
 
         self.trainer.set_on_test_complete(save_acc)
         config = self.get_config_with_mocked_element()
-        self.control_output(lambda: self.run_trainer(network_base = LpTestNetwork(config = config)))
+        self.control_output(lambda: self.run_trainer(config))
         np.testing.assert_allclose(self.test_acc, [1.0], rtol = 0.0, atol = 1e-6, err_msg = 'Accuracy should be 1.0 as long as element returns y as its output')
+
+    def test_creates_out_layer(self):
+        config = LpTestNetworkConfig()
+        self.control_output(lambda: self.run_trainer(config))
+
+        layers = config.convs.convs[0].layers
+        _, y = self.dataset.get_batch(self.dataset.get_dataset('train'), 0, 1)
+
+        self.assertGreaterEqual(len(layers), 1, 'Should have at least one layer')
+        self.assertEqual(len(layers[-1]), y.shape[-1], 'Number of elements in last layer should be equal to number of classes')
+
+    def test_initializes_only_once(self):
+        config = LpTestNetworkConfig()
+        X, y = self.dataset.get_batch(self.dataset.get_dataset('train'), 0, 1)
+        element = config.convs.convs[0]
+        X = np.reshape(X[0], [-1, np.multiply.reduce(X[0].shape[1:])])
+
+        element.init_out_layer(X.shape, y.shape)
+        element.layers[-1][0].test_attr = 'testing'
+
+        self.assertTrue(element.initialized, 'Initialized flag should be set to True after initialization')
+
+        element.init_out_layer(X.shape, y.shape)
+        has_test_attr = hasattr(element.layers[-1][0], 'test_attr')
+        self.assertTrue(has_test_attr, 'New attribute should be still present')
+
